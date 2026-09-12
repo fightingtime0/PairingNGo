@@ -1,0 +1,32 @@
+# Install with:
+#   sudo cp deploy/onic-tournament.service /etc/systemd/system/
+#   sudo sed -i "s|__USER__|$USER|g; s|__DIR__|$PWD|g" /etc/systemd/system/onic-tournament.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now onic-tournament
+
+[Unit]
+Description=Onic TCG Tournament
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__DIR__
+Environment=PORT=3000
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node __DIR__/server.js
+Restart=always
+RestartSec=5
+
+# Tournaments are written to disk after every change, so an unexpected restart
+# loses nothing. Restart=always means a crash mid-event self-heals.
+
+# Hardening. The service only ever needs to write its own data/ directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=__DIR__/data
+
+[Install]
+WantedBy=multi-user.target

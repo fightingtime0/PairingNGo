@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Standings — Onic TCG</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="screen">
+
+<h1 id="title">…</h1>
+<div id="body"></div>
+
+<script src="/app.js"></script>
+<script>
+const id = new URLSearchParams(location.search).get('id');
+let view = 'standings';
+
+async function refresh() {
+  if (!id) {
+    $('#title').textContent = 'Add ?id=CODE to the address to show a tournament.';
+    return;
+  }
+  try {
+    const data = await api('GET', `/api/tournaments/${id}`);
+    $('#title').textContent = `${data.name} — ${view === 'standings' ? t('standings') : t('pairings')} · ${t('round')} ${data.currentRound}`;
+    render(data);
+  } catch (err) {
+    $('#title').textContent = err.message;
+  }
+}
+
+function render(data) {
+  const host = $('#body');
+  host.innerHTML = '';
+
+  if (view === 'pairings') {
+    const rows = data.pairings.map((m) =>
+      el('tr', {}, [
+        el('td', { class: 'num', text: m.bye ? '—' : String(m.table) }),
+        el('td', { text: m.p1 }),
+        el('td', { text: m.bye ? 'bye' : m.p2 }),
+      ])
+    );
+    host.appendChild(el('table', {}, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { class: 'num', text: 'Meja' }), el('th', { text: t('player') }), el('th', { text: t('player') }),
+      ])]),
+      el('tbody', {}, rows),
+    ]));
+  } else {
+    const rows = data.standings.filter((r) => !r.dropped).map((r) =>
+      el('tr', {}, [
+        el('td', { class: 'num', text: String(r.rank) }),
+        el('td', { text: r.name }),
+        el('td', { class: 'num', text: String(r.points) }),
+        el('td', { class: 'num', text: recordText(r) }),
+        el('td', { class: 'num', text: pct(r.opWinPct) }),
+      ])
+    );
+    host.appendChild(el('table', {}, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { class: 'num', text: '#' }),
+        el('th', { text: t('player') }),
+        el('th', { class: 'num', text: t('points') }),
+        el('th', { class: 'num', text: 'W–L–D' }),
+        el('th', { class: 'num', text: 'Op Win %' }),
+      ])]),
+      el('tbody', {}, rows),
+    ]));
+  }
+}
+
+// Alternate between standings and pairings so one screen covers both.
+setInterval(() => { view = view === 'standings' ? 'pairings' : 'standings'; refresh(); }, 20000);
+setInterval(refresh, 10000);
+refresh();
+</script>
+</body>
+</html>

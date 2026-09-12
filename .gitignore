@@ -1,0 +1,24 @@
+# Tournament data — contains organizer password hashes and admin tokens.
+# Never commit this.
+data/*
+!data/.gitkeep
+
+# Atomic-write temp files (server.js writes <id>.json.<pid>.tmp then renames)
+*.tmp
+
+# Local backups
+*.tar.gz
+onic-backup-*.json
+
+# Editors / OS
+.DS_Store
+__MACOSX/
+._*
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Node (there are no dependencies, but keep these out if anything is ever added)
+node_modules/
+npm-debug.log*

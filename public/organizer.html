@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Organizer — Onic TCG Tournament</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="brand">Onic TCG <span>Organizer</span></div>
+  <a href="/">Player view</a>
+  <a href="#" id="screen-link" class="hidden">Big screen</a>
+  <button class="quiet" style="color:#cfdcf2" id="signout-btn" onclick="signOut()">Sign out</button>
+</header>
+
+<main class="wrap-wide">
+
+  <!-- ============================ sign in / create ==================== -->
+  <div id="gate">
+    <div class="columns">
+      <section class="panel">
+        <h2>Open a tournament</h2>
+        <div id="gate-note" class="note"></div>
+        <div class="field">
+          <label for="gate-id">Tournament code</label>
+          <input id="gate-id" type="text" maxlength="5" autocapitalize="characters" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="gate-pw">Organizer password</label>
+          <input id="gate-pw" type="password">
+        </div>
+        <button class="wide" onclick="signIn()">Open</button>
+        <div id="recent" class="helper"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Start a new tournament</h2>
+        <div id="create-note" class="note"></div>
+        <div class="field">
+          <label for="new-name">Event name</label>
+          <input id="new-name" type="text" placeholder="Onic TCG Weekly — 12 Sep">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="new-rounds">Swiss rounds</label>
+            <input id="new-rounds" type="number" min="1" max="20" value="4">
+          </div>
+          <div class="field">
+            <label for="new-cut">Top cut</label>
+            <select id="new-cut">
+              <option value="0">None</option>
+              <option value="2">Top 2</option>
+              <option value="4">Top 4</option>
+              <option value="8" selected>Top 8</option>
+              <option value="16">Top 16</option>
+              <option value="32">Top 32</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="new-pw">Organizer password</label>
+          <input id="new-pw" type="password" autocomplete="new-password">
+          <div class="helper">Anyone with this password can run the event. Write it down.</div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="new-draws" checked style="width:auto;margin-right:.4rem">Allow draws</label>
+        </div>
+        <button class="wide" onclick="createTournament()">Create tournament</button>
+      </section>
+    </div>
+  </div>
+
+  <!-- ================================ console ========================= -->
+  <div id="console" class="hidden">
+    <div id="console-note" class="note"></div>
+
+    <section class="panel" id="header-panel"></section>
+
+    <div class="columns">
+      <div>
+        <section class="panel" id="players-panel"></section>
+        <section class="panel" id="settings-panel"></section>
+      </div>
+      <div>
+        <section class="panel" id="round-panel"></section>
+        <section class="panel" id="cut-panel"></section>
+        <section class="panel" id="standings-panel"></section>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script src="/app.js"></script>
+<script>
+let auth = null;   // { id, token, name }
+let data = null;   // adminView payload
+let poll = null;
+
+const gateNote = $('#gate-note');
+const createNote = $('#create-note');
+const consoleNote = $('#console-note');
+
+$('#gate-id').addEventListener('input', (e) => { e.target.value = e.target.value.toUpperCase(); });
+
+// ------------------------------------------------------------ session ----
+
+const stored = localStorage.getItem('onic-admin');
+if (stored) {
+  try {
+    auth = JSON.parse(stored);
+    load().catch(() => { auth = null; localStorage.removeItem('onic-admin'); showGate(); });
+  } catch { showGate(); }
+} else {
+  showGate();
+}
+
+listRecent();
+
+async function listRecent() {
+  try {
+    const { tournaments } = await api('GET', '/api/tournaments');
+    if (!tournaments.length) return;
+    const host = $('#recent');
+    host.textContent = 'On this server: ';
+    tournaments.slice(0, 6).forEach((tt, i) => {
+      if (i) host.appendChild(document.createTextNode(', '));
+      host.appendChild(el('a', {
+        href: '#',
+        text: `${tt.name} (${tt.id})`,
+        onClick: (e) => { e.preventDefault(); $('#gate-id').value = tt.id; $('#gate-pw').focus(); },
+      }));
+    });
+  } catch { /* server list is a convenience, not required */ }
+}
+
+async function createTournament() {
+  const body = {
+    name: $('#new-name').value.trim(),
+    rounds: Number($('#new-rounds').value),
+    topCut: Number($('#new-cut').value),
+    password: $('#new-pw').value,
+    allowDraws: $('#new-draws').checked,
+  };
+  try {
+    const res = await api('POST', '/api/tournaments', body);
+    auth = { id: res.id, token: res.adminToken, name: res.name };
+    localStorage.setItem('onic-admin', JSON.stringify(auth));
+    await load();
+    showNote(consoleNote, `Tournament created. Code ${res.id} — give this to your players.`, 'good');
+  } catch (err) {
+    showNote(createNote, err.message, 'error');
+  }
+}
+
+async function signIn() {
+  const id = $('#gate-id').value.trim().toUpperCase();
+  try {
+    const res = await api('POST', `/api/tournaments/${id}/login`, { password: $('#gate-pw').value });
+    auth = { id: res.id, token: res.adminToken, name: res.name };
+    localStorage.setItem('onic-admin', JSON.stringify(auth));
+    await load();
+  } catch (err) {
+    showNote(gateNote, err.message, 'error');
+  }
+}
+
+function signOut() {
+  localStorage.removeItem('onic-admin');
+  auth = null;
+  data = null;
+  if (poll) clearInterval(poll);
+  showGate();
+}
+
+function showGate() {
+  $('#gate').classList.remove('hidden');
+  $('#console').classList.add('hidden');
+  $('#signout-btn').classList.add('hidden');
+  $('#screen-link').classList.add('hidden');
+}
+
+async function load() {
+  data = await api('GET', `/api/tournaments/${auth.id}`, null, auth.token);
+  $('#gate').classList.add('hidden');
+  $('#console').classList.remove('hidden');
+  $('#signout-btn').classList.remove('hidden');
+  const link = $('#screen-link');
+  link.href = `/standings.html?id=${auth.id}`;
+  link.classList.remove('hidden');
+  render();
+  if (poll) clearInterval(poll);
+  poll = setInterval(() => load().catch(() => {}), 12000);
+}
+
+async function act(method, path, body) {
+  try {
+    const res = await api(method, `/api/tournaments/${auth.id}${path}`, body, auth.token);
+    await load();
+    return res;
+  } catch (err) {
+    showNote(consoleNote, err.message, 'error');
+    throw err;
+  }
+}
+
+// ------------------------------------------------------------- rendering --
+
+function render() {
+  renderHeader();
+  renderPlayers();
+  renderSettings();
+  renderRound();
+  renderCut();
+  renderStandings();
+}
+
+function renderHeader() {
+  const host = $('#header-panel');
+  host.innerHTML = '';
+  const done = data.rounds || 0;
+  host.appendChild(el('h1', { text: data.name }));
+  host.appendChild(el('p', { class: 'helper', style: 'margin-bottom:.75rem' },
+    [`Tournament code `, el('strong', { class: 'code', text: data.id }),
+     ` · ${data.standings.length} players · round ${data.currentRound} of ${data.settings.rounds} · ${data.status}`]));
+  host.appendChild(el('div', { class: 'btn-row' }, [
+    el('button', { class: 'secondary', text: 'Download backup', onClick: downloadBackup }),
+    el('button', { class: 'secondary', text: 'Print player codes', onClick: printCodes }),
+  ]));
+}
+
+function renderPlayers() {
+  const host = $('#players-panel');
+  host.innerHTML = '';
+  host.appendChild(el('h2', { text: `Players (${data.players.length})` }));
+
+  const box = el('textarea', {
+    id: 'bulk-names',
+    placeholder: 'One name per line, then Add players',
+  });
+  host.appendChild(el('div', { class: 'field' }, [box]));
+  host.appendChild(el('button', { class: 'wide', text: 'Add players', onClick: addPlayers }));
+
+  if (data.players.length === 0) {
+    host.appendChild(el('p', { class: 'empty', text: 'No players yet. Paste a list above to start.' }));
+    return;
+  }
+
+  const rows = data.players.map((p) =>
+    el('tr', { class: p.dropped ? 'dropped' : '' }, [
+      el('td', { text: p.name }),
+      el('td', { class: 'code', text: p.code }),
+      el('td', { class: 'num' }, [
+        el('button', {
+          class: 'quiet',
+          text: p.dropped ? 'Undrop' : 'Drop',
+          onClick: () => act('POST', `/players/${p.id}/drop`, { dropped: !p.dropped }),
+        }),
+        data.currentRound === 0
+          ? el('button', { class: 'quiet', text: 'Remove', onClick: () => act('DELETE', `/players/${p.id}`) })
+          : null,
+      ]),
+    ])
+  );
+
+  host.appendChild(el('div', { class: 'table-scroll', style: 'margin-top:1rem' }, [
+    el('table', {}, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { text: 'Name' }), el('th', { text: 'Code' }), el('th', { class: 'num', text: '' }),
+      ])]),
+      el('tbody', {}, rows),
+    ]),
+  ]));
+}
+
+async function addPlayers() {
+  const raw = $('#bulk-names').value;
+  const names = raw.split('\n').map((s) => s.trim()).filter(Boolean);
+  if (!names.length) return;
+  const res = await act('POST', '/players', { names });
+  if (res.skipped.length) {
+    showNote(consoleNote, `Skipped duplicate names: ${res.skipped.join(', ')}`, 'warn');
+  } else {
+    showNote(consoleNote, `Added ${res.added.length} player(s).`, 'good');
+  }
+}
+
+function renderSettings() {
+  const host = $('#settings-panel');
+  host.innerHTML = '';
+  host.appendChild(el('h2', { text: 'Settings' }));
+
+  const roundsInput = el('input', { type: 'number', min: '1', max: '20', value: String(data.settings.rounds) });
+  const cutSelect = el('select', {}, [0, 2, 4, 8, 16, 32].map((n) =>
+    el('option', { value: String(n), selected: data.settings.topCut === n, text: n === 0 ? 'None' : `Top ${n}` })
+  ));
+  const drawsBox = el('input', { type: 'checkbox', checked: data.settings.allowDraws, style: 'width:auto;margin-right:.4rem' });
+
+  host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Swiss rounds' }), roundsInput]));
+  host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Top cut' }), cutSelect]));
+  host.appendChild(el('div', { class: 'field' }, [el('label', {}, [drawsBox, 'Allow draws'])]));
+  host.appendChild(el('button', {
+    class: 'wide secondary',
+    text: 'Save settings',
+    onClick: () => act('POST', '/settings', {
+      rounds: Number(roundsInput.value),
+      topCut: Number(cutSelect.value),
+      allowDraws: drawsBox.checked,
+    }).then(() => showNote(consoleNote, 'Settings saved.', 'good')),
+  }));
+}
+
+function renderRound() {
+  const host = $('#round-panel');
+  host.innerHTML = '';
+
+  if (data.status === 'cut') {
+    host.classList.add('hidden');
+    return;
+  }
+  host.classList.remove('hidden');
+
+  const round = data.round;
+  host.appendChild(el('h2', { text: round ? `Round ${round.number}` : 'Rounds' }));
+
+  if (!round) {
+    host.appendChild(el('p', { class: 'empty', text: 'No rounds paired yet.' }));
+    host.appendChild(el('button', {
+      class: 'wide',
+      text: 'Pair round 1',
+      disabled: data.players.length < 2,
+      onClick: () => act('POST', '/pair', {}),
+    }));
+    return;
+  }
+
+  if (round.hadRematch) {
+    host.appendChild(el('div', { class: 'note warn', text: 'This round contains at least one rematch — no rematch-free pairing was possible.' }));
+  }
+
+  const pending = round.matches.filter((m) => m.status === 'pending').length;
+  const open = round.matches.filter((m) => m.status === 'open').length;
+
+  host.appendChild(el('p', { class: 'helper' , text:
+    `${round.matches.length} matches · ${pending} awaiting your confirmation · ${open} not yet reported` }));
+  host.appendChild(el('p', { class: 'helper', style: 'margin-bottom:.75rem', text:
+    data.settings.allowDraws
+      ? 'Press ◀ if the left player won, ▶ if the right player won, = for a draw. ↺ undoes a confirmed result.'
+      : 'Press ◀ if the left player won, ▶ if the right player won. ↺ undoes a confirmed result.' }));
+
+  const list = el('div', {});
+  for (const m of round.matches) {
+    if (m.bye) {
+      list.appendChild(el('div', { class: 'match confirmed' }, [
+        el('div', { class: 'table-no', text: '—' }),
+        el('div', { class: 'players' }, [el('strong', { text: m.p1 }), ' — bye']),
+        el('div', {}, [el('span', { class: 'tag confirmed', text: 'bye' })]),
+      ]));
+      continue;
+    }
+
+    const p1Won = m.result === 'p1';
+    const p2Won = m.result === 'p2';
+    const isDraw = m.result === 'draw';
+
+    list.appendChild(el('div', { class: 'match ' + m.status }, [
+      el('div', { class: 'table-no', text: String(m.table) }),
+      el('div', { class: 'players' }, [
+        el('span', { class: p1Won ? 'win' : '', text: m.p1 }),
+        document.createTextNode('  vs  '),
+        el('span', { class: p2Won ? 'win' : '', text: m.p2 }),
+        m.status === 'pending'
+          ? el('div', { class: 'meta', text: `${m.reportedBy || 'Player'} reported ${isDraw ? 'a draw' : (p1Won ? m.p1 : m.p2) + ' won'}` })
+          : null,
+      ]),
+      el('div', { class: 'controls' }, [
+        el('button', { class: 'secondary', title: `${m.p1} wins`, text: '◀',
+          onClick: () => act('POST', '/result', { matchId: m.id, result: 'p1' }) }),
+        data.settings.allowDraws
+          ? el('button', { class: 'secondary', title: 'Draw', text: '=',
+              onClick: () => act('POST', '/result', { matchId: m.id, result: 'draw' }) })
+          : null,
+        el('button', { class: 'secondary', title: `${m.p2} wins`, text: '▶',
+          onClick: () => act('POST', '/result', { matchId: m.id, result: 'p2' }) }),
+        m.status === 'confirmed'
+          ? el('button', { class: 'quiet', title: 'Reopen', text: '↺',
+              onClick: () => act('POST', '/reopen', { matchId: m.id }) })
+          : null,
+      ]),
+    ]));
+  }
+  host.appendChild(list);
+
+  host.appendChild(el('div', { class: 'btn-row', style: 'margin-top:1rem' }, [
+    pending > 0
+      ? el('button', { text: `Confirm ${pending} reported result(s)`, onClick: () => act('POST', '/confirm-all', {}) })
+      : null,
+    el('button', {
+      class: 'secondary',
+      text: 'Pair next round',
+      onClick: () => act('POST', '/pair', {}),
+    }),
+    round.matches.every((m) => m.status !== 'confirmed' || m.bye)
+      ? el('button', { class: 'quiet', text: 'Re-pair this round', onClick: () => act('POST', '/repair', {}) })
+      : null,
+    data.settings.topCut > 0
+      ? el('button', { class: 'secondary', text: `Start top ${data.settings.topCut}`,
+          onClick: () => act('POST', '/cut', { size: data.settings.topCut }) })
+      : null,
+  ]));
+}
+
+function renderCut() {
+  const host = $('#cut-panel');
+  host.innerHTML = '';
+  if (!data.cut) { host.classList.add('hidden'); return; }
+  host.classList.remove('hidden');
+
+  host.appendChild(el('h2', { text: `Top ${data.cut.size}` }));
+
+  const board = el('div', { class: 'bracket' });
+  for (const round of data.cut.rounds) {
+    const col = el('div', { class: 'bracket-round' });
+    const remaining = data.cut.size / Math.pow(2, round.number - 1);
+    col.appendChild(el('h4', { text: remaining === 2 ? 'Final' : remaining === 4 ? 'Semi-finals' : `Round of ${remaining}` }));
+    for (const m of round.matches) {
+      col.appendChild(el('div', { class: 'bracket-match' }, [
+        el('div', { class: m.result === 'p1' ? 'win' : '' }, [m.p1]),
+        el('div', { class: m.result === 'p2' ? 'win' : '' }, [m.p2]),
+        el('div', { class: 'btn-row', style: 'margin-top:.35rem' }, [
+          el('button', { class: 'quiet', text: `${m.p1} won`,
+            onClick: () => act('POST', '/result', { matchId: m.id, result: 'p1' }) }),
+          el('button', { class: 'quiet', text: `${m.p2} won`,
+            onClick: () => act('POST', '/result', { matchId: m.id, result: 'p2' }) }),
+        ]),
+      ]));
+    }
+    board.appendChild(col);
+  }
+  host.appendChild(board);
+
+  if (data.status !== 'done') {
+    host.appendChild(el('button', {
+      class: 'secondary',
+      style: 'margin-top:1rem',
+      text: 'Advance bracket',
+      onClick: () => act('POST', '/cut/advance', {}),
+    }));
+  } else {
+    host.appendChild(el('div', { class: 'note good', text: 'Tournament complete.' }));
+  }
+}
+
+function renderStandings() {
+  const host = $('#standings-panel');
+  host.innerHTML = '';
+  host.appendChild(el('h2', { text: 'Standings' }));
+
+  if (!data.standings.length) {
+    host.appendChild(el('p', { class: 'empty', text: 'Standings appear once results are confirmed.' }));
+    return;
+  }
+
+  const rows = data.standings.map((r) =>
+    el('tr', { class: r.dropped ? 'dropped' : '' }, [
+      el('td', { class: 'num', text: String(r.rank) }),
+      el('td', { text: r.name }),
+      el('td', { class: 'num', text: String(r.points) }),
+      el('td', { class: 'num', text: recordText(r) }),
+      el('td', { class: 'num', text: pct(r.opWinPct) }),
+      el('td', { class: 'num', text: pct(r.opOpWinPct) }),
+    ])
+  );
+
+  host.appendChild(el('div', { class: 'table-scroll' }, [
+    el('table', {}, [
+      el('thead', {}, [el('tr', {}, [
+        el('th', { class: 'num', text: '#' }),
+        el('th', { text: 'Player' }),
+        el('th', { class: 'num', text: 'Pts' }),
+        el('th', { class: 'num', text: 'W–L–D' }),
+        el('th', { class: 'num', text: 'Op Win %' }),
+        el('th', { class: 'num', text: 'Op Op Win %' }),
+      ])]),
+      el('tbody', {}, rows),
+    ]),
+  ]));
+}
+
+// ------------------------------------------------------------- utilities --
+
+async function downloadBackup() {
+  const res = await fetch(`/api/tournaments/${auth.id}/export`, {
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
+  if (!res.ok) { showNote(consoleNote, 'Backup failed.', 'error'); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${data.id}-backup.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function printCodes() {
+  const win = window.open('', '_blank');
+  if (!win) return;
+  const rows = data.players
+    .map((p) => `<tr><td>${escapeHtml(p.name)}</td><td class="c">${p.code}</td></tr>`)
+    .join('');
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(data.name)} — player codes</title>
+  <style>
+    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:2rem;color:#14213d}
+    h1{font-size:1.3rem;margin:0 0 .25rem}
+    p{color:#555;margin:0 0 1.5rem;font-size:.9rem}
+    table{width:100%;border-collapse:collapse;font-size:1rem}
+    td{padding:.45rem .5rem;border-bottom:1px solid #ccc}
+    .c{font-weight:700;letter-spacing:.1em;text-align:right;width:6rem}
+  </style></head><body>
+  <h1>${escapeHtml(data.name)}</h1>
+  <p>Tournament code <strong>${data.id}</strong> — players enter their name and code at the player page.</p>
+  <table>${rows}</table></body></html>`);
+  win.document.close();
+  win.print();
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+</script>
+</body>
+</html>

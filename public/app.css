@@ -1,0 +1,256 @@
+:root {
+  --ink: #14213d;
+  --ink-soft: #4a5568;
+  --ink-faint: #8c96a5;
+  --paper: #eef1f5;
+  --surface: #ffffff;
+  --rule: #d5dbe4;
+  --rule-strong: #b3bcca;
+  --pending: #a1560b;
+  --pending-bg: #fdf3e3;
+  --confirmed: #1a6b3c;
+  --confirmed-bg: #e8f4ec;
+  --danger: #a3211d;
+  --danger-bg: #fbeceb;
+  --focus: #2f5fd0;
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --step-0: 1rem;
+  --step-1: 1.2rem;
+  --step-2: 1.5rem;
+  --step-3: 2rem;
+  --radius: 6px;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+h1, h2, h3 { line-height: 1.2; margin: 0 0 .5rem; font-weight: 650; letter-spacing: -.01em; }
+h1 { font-size: var(--step-3); }
+h2 { font-size: var(--step-2); }
+h3 { font-size: var(--step-1); }
+p { margin: 0 0 1rem; max-width: 62ch; }
+
+a { color: var(--focus); }
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.masthead {
+  background: var(--ink);
+  color: #fff;
+  padding: .85rem 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.masthead .brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: -.02em;
+  margin-right: auto;
+}
+.masthead .brand span { color: #9fb3d9; font-weight: 500; }
+.masthead a { color: #cfdcf2; text-decoration: none; font-size: .9rem; }
+.masthead a:hover { color: #fff; text-decoration: underline; }
+
+.wrap { max-width: 34rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+.wrap-wide { max-width: 76rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+.panel > :last-child { margin-bottom: 0; }
+
+.columns { display: grid; grid-template-columns: 1fr; gap: 1rem; }
+@media (min-width: 62rem) {
+  .columns { grid-template-columns: 22rem 1fr; align-items: start; }
+}
+
+/* ------------------------------------------------------------------ form */
+
+label { display: block; font-weight: 600; font-size: .9rem; margin-bottom: .3rem; }
+
+input[type=text], input[type=password], input[type=number], select, textarea {
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  padding: .6rem .7rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: #fff;
+}
+textarea { min-height: 7rem; resize: vertical; }
+
+.field { margin-bottom: .9rem; }
+.field-row { display: flex; gap: .6rem; }
+.field-row > * { flex: 1; }
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: .6rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: #fff;
+  cursor: pointer;
+}
+button:hover { background: #1d2f57; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+
+button.secondary { background: #fff; color: var(--ink); border-color: var(--rule-strong); }
+button.secondary:hover { background: #f3f5f9; }
+button.quiet { background: none; border-color: transparent; color: var(--ink-soft); padding: .3rem .5rem; }
+button.quiet:hover { background: #eceff4; color: var(--ink); }
+button.danger { background: #fff; color: var(--danger); border-color: #e0b6b4; }
+button.danger:hover { background: var(--danger-bg); }
+button.wide { width: 100%; }
+
+.btn-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+
+/* --------------------------------------------------------------- feedback */
+
+.note {
+  padding: .7rem .85rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: #f6f8fa;
+  font-size: .92rem;
+  margin-bottom: 1rem;
+}
+.note.error { background: var(--danger-bg); border-color: #e0b6b4; color: var(--danger); }
+.note.good { background: var(--confirmed-bg); border-color: #b6d6c2; color: var(--confirmed); }
+.note.warn { background: var(--pending-bg); border-color: #e5c99c; color: var(--pending); }
+.note:empty { display: none; }
+
+.empty { color: var(--ink-faint); font-size: .95rem; padding: 1rem 0; }
+
+/* ------------------------------------------------------------ player hero */
+
+.assignment { text-align: center; padding: 1.75rem 1.25rem; }
+.assignment .caption {
+  font-size: .95rem;
+  color: var(--ink-soft);
+  margin-bottom: .25rem;
+}
+.assignment .table-number {
+  font-size: clamp(4.5rem, 22vw, 7.5rem);
+  font-weight: 800;
+  line-height: .95;
+  letter-spacing: -.04em;
+  font-variant-numeric: tabular-nums;
+  margin: .25rem 0 .5rem;
+}
+.assignment .versus { font-size: var(--step-1); font-weight: 600; }
+.assignment .versus small { display: block; font-size: .85rem; font-weight: 500; color: var(--ink-soft); margin-bottom: .2rem; }
+.assignment.bye .table-number { font-size: clamp(2.5rem, 12vw, 4rem); }
+
+.record-strip {
+  display: flex;
+  justify-content: center;
+  gap: 0;
+  border-top: 1px solid var(--rule);
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+}
+.record-strip div { flex: 1; text-align: center; }
+.record-strip .value { font-size: var(--step-2); font-weight: 700; font-variant-numeric: tabular-nums; }
+.record-strip .key { font-size: .78rem; color: var(--ink-soft); }
+.record-strip div + div { border-left: 1px solid var(--rule); }
+
+/* ---------------------------------------------------------------- tables */
+
+table { width: 100%; border-collapse: collapse; font-size: .93rem; }
+th, td { padding: .45rem .55rem; text-align: left; border-bottom: 1px solid var(--rule); }
+th { font-size: .8rem; color: var(--ink-soft); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:last-child td { border-bottom: none; }
+tr.dropped td { color: var(--ink-faint); text-decoration: line-through; }
+.table-scroll { overflow-x: auto; }
+
+/* ------------------------------------------------------------ match rows */
+
+.match {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr auto;
+  gap: .75rem;
+  align-items: center;
+  padding: .6rem .55rem;
+  border-bottom: 1px solid var(--rule);
+  border-left: 3px solid transparent;
+}
+.match:last-child { border-bottom: none; }
+.match.pending { border-left-color: var(--pending); background: var(--pending-bg); }
+.match.confirmed { border-left-color: var(--confirmed); }
+.match .table-no { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.match .players { line-height: 1.35; }
+.match .players .win { font-weight: 700; }
+.match .meta { font-size: .8rem; color: var(--pending); }
+.match .controls { display: flex; gap: .3rem; }
+.match .controls button { padding: .35rem .55rem; font-size: .85rem; }
+
+.tag {
+  display: inline-block;
+  font-size: .75rem;
+  font-weight: 600;
+  padding: .1rem .4rem;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.tag.pending { color: var(--pending); background: var(--pending-bg); }
+.tag.confirmed { color: var(--confirmed); background: var(--confirmed-bg); }
+
+/* -------------------------------------------------------------- bracket */
+
+.bracket { display: flex; gap: 1.5rem; overflow-x: auto; padding-bottom: .5rem; }
+.bracket-round { min-width: 15rem; }
+.bracket-round h4 { margin: 0 0 .5rem; font-size: .85rem; color: var(--ink-soft); }
+.bracket-match {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: .5rem .6rem;
+  margin-bottom: .5rem;
+  font-size: .9rem;
+}
+.bracket-match .win { font-weight: 700; }
+
+/* ------------------------------------------------------- big screen view */
+
+.screen { background: var(--ink); color: #fff; min-height: 100vh; padding: 2rem; }
+.screen h1 { font-size: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 1.5rem; }
+.screen table { font-size: clamp(1rem, 2.2vw, 1.5rem); color: #fff; }
+.screen th, .screen td { border-bottom-color: #2c4270; padding: .5rem .75rem; }
+.screen th { color: #9fb3d9; }
+
+.hidden { display: none !important; }
+
+.helper { font-size: .85rem; color: var(--ink-soft); margin-top: .35rem; }
+.code {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .08em;
+  font-weight: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
