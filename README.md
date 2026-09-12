@@ -4,29 +4,39 @@ A self-hosted Swiss tournament system for Pokémon TCG events. Built as a fallba
 you control, so it is deliberately plain: **no dependencies at all**, no database
 server, no build step. Just Node and a folder of JSON files.
 
+- Public tournament list, standings, pairings and bracket — no login to view
+- Player portal with QR code: players find themselves by name or PTCG ID
 - Organizer console for running the event
-- Player page where people look up their table with a name and a 4-character code
-- Swiss pairings with the Play! Pokémon tiebreakers
+- Swiss pairings with a choice of two tiebreaker systems
 - Single-elimination top cut
+- Standings export to CSV
 - Indonesian and English, switchable
 - One-click backup download
 
 ## What is in here
 
 ```
-server.js          the whole server
-lib/swiss.js       pairing, standings, tiebreakers, bracket
-lib/test.js        engine tests
-lib/e2e.js         end-to-end HTTP test (needs a server on :3999)
-lib/e2e-run.js     starts that server for you, then runs e2e.js
-public/            the three pages
-data/              tournaments, one JSON file each (created on first run)
-deploy/            systemd unit, nginx config, setup script
-start.bat          double-click launcher for Windows
+server.js            the whole server
+package.json         npm scripts only — there are no dependencies
+install.sh           one-command deploy for Ubuntu or Oracle Linux
+start.bat            double-click local run on Windows
+deploy/setup.sh      the same deploy, split into reviewable pieces
+deploy/nginx.conf    reverse proxy config
+deploy/onic-tournament.service   systemd unit
+lib/swiss.js         pairing, standings, tiebreakers, bracket
+lib/qr.js            QR encoder (no dependency, outputs SVG)
+lib/test.js          engine tests
+lib/e2e.js           end-to-end HTTP test (expects a server on :3999)
+lib/e2e-run.js       starts that server, runs e2e.js, cleans up
+public/index.html    tournament list
+public/tournament.html  public standings, rounds, players, top cut
+public/portal.html   player portal
+public/qr.html       printable QR sheet
+public/organizer.html   organizer console
+public/standings.html   big-screen display
+data/                tournaments, one JSON file each (created on first run)
+KNOWN-ISSUES.md      live register of bugs, fixes and gaps — read before an event
 ```
-
-`data/` is gitignored. It holds organizer password hashes and admin tokens —
-do not commit it.
 
 ## Run it locally first
 
@@ -40,38 +50,16 @@ flow on your laptop before you deploy.
 Run the tests any time with:
 
 ```bash
-npm test          # engine tests: tiebreakers, byes, pairing, bracket seeding
-npm run test:e2e  # full HTTP run against a throwaway server on port 3999
+npm test          # engine tests
+npm run test:e2e  # full HTTP run on a throwaway server and data directory
 ```
 
-`npm run test:e2e` starts and stops its own server in a temp directory. Running
-`node lib/e2e.js` directly expects one to already be listening on 3999 and
-fails with a bare `fetch failed` if it is not.
-
-Note the server binds `0.0.0.0`, not just localhost, so anyone on the same
-wifi can reach it at your machine's LAN IP. Handy for testing on a phone,
-worth knowing before you open it on a cafe network.
+`npm run test:e2e` starts its own server on port 3999 with a temporary data
+directory and cleans up after itself, so it never touches your real `data/`.
 
 ---
 
 ## Deploying to the Oracle server
-
-### The short version
-
-```bash
-git clone YOUR_REPO_URL ~/onic-tournament
-cd ~/onic-tournament
-bash deploy/setup.sh
-```
-
-That installs Node if needed, runs the tests, registers the systemd service and
-opens the instance firewall. It works on Oracle Linux and Ubuntu, on x86 and on
-ARM/Ampere — there are no native dependencies, so nothing needs compiling.
-
-Two things it deliberately leaves to you: the **VCN ingress rule** in the Oracle
-web console (step 4a below) and **nginx + TLS** (step 5), which needs your domain.
-
-The rest of this section is what the script does, by hand.
 
 ### 1. Install Node
 
@@ -100,29 +88,42 @@ sudo dnf module enable nodejs:22 -y
 sudo dnf install -y nodejs
 ```
 
-### 2. Get the files onto the server
+### 2. Copy the files up
+
+From your Mac, in the folder containing `onic-tournament`:
 
 ```bash
-git clone YOUR_REPO_URL ~/onic-tournament
-cd ~/onic-tournament
+scp -r onic-tournament opc@YOUR_SERVER_IP:~/
 ```
 
-The SSH username is `opc` on Oracle Linux images and `ubuntu` on Ubuntu images.
-
-To update later: `git pull && sudo systemctl restart onic-tournament`. Your
-`data/` directory is gitignored, so pulling never touches live tournaments.
+The username is `opc` on Oracle Linux images and `ubuntu` on Ubuntu images.
 
 ### 3. Run it as a service so it survives reboots
 
 ```bash
-sudo cp deploy/onic-tournament.service /etc/systemd/system/
-sudo sed -i "s|__USER__|$USER|g; s|__DIR__|$PWD|g" /etc/systemd/system/onic-tournament.service
+sudo tee /etc/systemd/system/onic-tournament.service > /dev/null <<'EOF'
+[Unit]
+Description=Onic TCG Tournament
+After=network.target
+
+[Service]
+Type=simple
+User=USERNAME
+WorkingDirectory=/home/USERNAME/onic-tournament
+Environment=PORT=3000
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo sed -i "s/USERNAME/$USER/g" /etc/systemd/system/onic-tournament.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now onic-tournament
 sudo systemctl status onic-tournament
 ```
-
-Logs: `sudo journalctl -u onic-tournament -f`
 
 `Restart=always` means if the process ever crashes mid-event it comes straight
 back up, and because tournaments are written to disk after every change, nothing
@@ -166,22 +167,21 @@ sudo dnf install -y nginx && sudo systemctl enable --now nginx
 ```
 
 ```bash
-sudo cp deploy/nginx.conf /etc/nginx/conf.d/onic.conf
-sudo sed -i 's/turnamen.example.com/YOUR.DOMAIN/' /etc/nginx/conf.d/onic.conf
+sudo tee /etc/nginx/conf.d/onic.conf > /dev/null <<'EOF'
+server {
+    listen 80;
+    server_name turnamen.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+EOF
+
 sudo nginx -t && sudo systemctl reload nginx
 ```
-
-**On Oracle Linux, do this or every single request returns 502:**
-
-```bash
-sudo setsebool -P httpd_can_network_connect 1
-```
-
-SELinux ships enforcing on Oracle Linux images and blocks nginx from opening a
-socket to `127.0.0.1:3000`. The config is correct, nginx starts fine, `nginx -t`
-passes — and you get 502 on every request with `Permission denied` in
-`/var/log/nginx/error.log`. This one wastes an afternoon if you don't know it.
-Ubuntu images use AppArmor and are not affected.
 
 Replace `turnamen.example.com` with your domain and point an A record at the
 server's public IP. Then add HTTPS:
@@ -203,11 +203,14 @@ several phone browsers block form submission over plain HTTP, so do not skip thi
 ## Running an event
 
 1. Open `/organizer`, create the tournament, note the 5-character code.
-2. Paste your player list, one name per line. Every player gets a 4-character code.
-3. Print the code sheet, or read codes out at sign-in.
+2. Paste your player list, one name per line. To record PTCG IDs, put the ID after
+   a comma: `Rizky Pratama, id11340289`.
+3. Open the QR sheet and print it, or put it on a screen at the door. Players scan
+   it to reach the portal. The sheet carries the *event*, not an identity, so it
+   is safe to put on a wall.
 4. Pair round 1.
-5. Players open the site, enter tournament code + their name + their code, and see
-   their table. They report their own result; you confirm it.
+5. Players find their name in the portal and see their table. They report their own
+   result; you confirm it.
 6. Confirm everything, pair the next round, repeat.
 7. Start the top cut when Swiss is done.
 
@@ -231,21 +234,60 @@ standings and current pairings, no interaction needed.
 
 ## Tiebreakers
 
-Standings sort by match points (win 3, draw 1, loss 0), then Opponents' Win %,
-then Opponents' Opponents' Win %, then head-to-head, then late arrival.
+There are two modes, set per tournament, because they do not always agree.
 
-Each opponent's win percentage is their wins plus half their draws, divided by the
-rounds they played, with a floor of 25% and a ceiling of 75%. Byes are excluded
-entirely — a bye awards 3 points but is not a win and does not count as a round
-played. This follows the Play! Pokémon tournament rules handbook.
+**Official handbook.** Match points, then Opponents' Win %, then Opponents'
+Opponents' Win %, then head-to-head, then late arrival. An opponent's win
+percentage is their wins plus half their draws over rounds played, floored at
+25%, and capped at **100% for a player who completed the event, 75% for one who
+dropped**. This is what the Play! Pokémon tournament rules handbook specifies —
+note the two different ceilings, which is easy to get wrong. Capping everyone at
+75% under-credits the opponents of anyone undefeated, and that is the top of the
+standings where the cut is decided.
 
-## Known issues
+One caveat on this mode's name. The handbook makes **tardiness the first
+tiebreaker**, ahead of Op Win %; this engine applies it late, after head-to-head,
+as listed above. The ordering moved between handbook revisions, so confirm which
+revision your scene plays under before relying on it.
 
-Read [KNOWN-ISSUES.md](KNOWN-ISSUES.md) before you run a real event on this.
-The short version: the Swiss engine is solid and well tested, but **players
-cannot see the top cut** — once the bracket starts, both the player page and
-the venue screen keep showing stale Swiss data, so you will be calling tables
-out loud. There is also no rate limiting anywhere.
+**Match turni.id.** Match points, then OMW%, then AVOMW%, then head-to-head, then
+WOScore. Here an opponent's win percentage is their match points over the maximum
+available match points, with no floor and no cap — so a draw counts as a third of
+a win rather than half, and figures below 25% are possible. WOScore is the raw
+total of your opponents' match points, used to split ties where the rounded
+percentages match.
+
+The second mode was reverse-engineered from turni.id's published standings, not
+from any documentation. Two observations drove it: a player showing 24.0% OMW,
+which is impossible under a 25% floor, and WOScore landing on exactly OMW × 75
+across a whole 5-round event. The test suite asserts that relationship still
+holds. If turni.id changes its formula, this mode will drift out of agreement.
+
+In both modes, byes award 3 points but do not count as a win and are excluded from
+win-percentage calculations entirely.
+
+**These two orderings differ in practice.** On simulated 32-player data the modes
+rank roughly six players differently. Pick one per event and stick to it.
+
+## Self-reporting
+
+Players report their own result from the portal and the organizer confirms it.
+Standings never move on an unconfirmed result.
+
+**Reading is open, writing is not.** Anyone can scan the QR, find their name and
+see their table — no credential, no typing beyond their name. Filing a result
+additionally requires the player's own four-character code, the one printed on
+the slip you hand them at registration. The portal remembers it per event, so it
+is typed once.
+
+That split matters. Without the code, the internal player id returned by the name
+search would be enough for anyone holding the event code to file a result as
+somebody else, and your confirmation queue would show it under that player's
+name. Reading is harmless; writing is what needs authorising.
+
+The Settings panel still has a switch to turn self-reporting off entirely, which
+makes the organizer enter every result. Use it if you would rather not hand out
+slips at all.
 
 ## Maintenance
 

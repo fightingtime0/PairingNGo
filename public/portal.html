@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portal Pemain — Onic TCG</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="brand">Onic TCG <span data-t="brand">Turnamen</span></div>
+  <button class="quiet" style="color:#cfdcf2" onclick="toggleLang()" data-t="switchLang">English</button>
+</header>
+
+<main class="wrap">
+  <h1 id="event-name">…</h1>
+  <p class="helper" id="event-meta" style="margin-bottom:1.25rem"></p>
+
+  <section id="search-panel" class="panel">
+    <h2 data-t="checkIn">Cari nama kamu</h2>
+    <p data-t="checkInIntro">Ketik nama atau PTCG ID kamu.</p>
+    <div id="search-note" class="note"></div>
+    <div class="field">
+      <input id="q" type="text" autocomplete="off" spellcheck="false" data-t-ph="nameOrId" placeholder="Nama atau PTCG ID">
+    </div>
+    <div id="matches"></div>
+  </section>
+
+  <div id="result"></div>
+
+  <p style="margin-top:1rem">
+    <a id="standings-link" href="#" data-t="viewStandings">Lihat klasemen</a>
+  </p>
+</main>
+
+<script src="/app.js"></script>
+<script>
+const tid = (new URLSearchParams(location.search).get('tid') || '').toUpperCase();
+let me = null;     // chosen player id
+let latest = null;
+let timer = null;
+let searchTimer = null;
+
+$('#standings-link').href = `/tournament.html?id=${tid}`;
+
+if (!tid) {
+  $('#event-name').textContent = t('noEvent');
+} else {
+  loadEvent();
+  const saved = localStorage.getItem(`onic-player-${tid}`);
+  if (saved) selectPlayer(saved);
+}
+
+async function loadEvent() {
+  try {
+    const data = await api('GET', `/api/tournaments/${tid}`);
+    $('#event-name').textContent = data.name;
+    $('#event-meta').textContent =
+      `${t('round')} ${data.currentRound}/${data.settings.rounds} · ${data.standings.length} ${t('playersWord')}`;
+  } catch (err) {
+    $('#event-name').textContent = err.message;
+  }
+}
+
+$('#q').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(runSearch, 200);
+});
+
+async function runSearch() {
+  const q = $('#q').value.trim();
+  const host = $('#matches');
+  host.innerHTML = '';
+  if (q.length < 1) return;
+
+  try {
+    const data = await api('GET', `/api/tournaments/${tid}/search?q=${encodeURIComponent(q)}`);
+    if (!data.players.length) {
+      host.appendChild(el('p', { class: 'empty', text: t('noPlayerFound') }));
+      return;
+    }
+    for (const p of data.players) {
+      host.appendChild(el('button', {
+        class: 'secondary wide pick',
+        onClick: () => selectPlayer(p.id),
+      }, [
+        el('span', { text: p.name }),
+      ]));
+    }
+  } catch (err) {
+    showNote($('#search-note'), err.message, 'error');
+  }
+}
+
+async function selectPlayer(pid) {
+  me = pid;
+  localStorage.setItem(`onic-player-${tid}`, pid);
+  await refresh();
+  if (latest) {
+    $('#search-panel').classList.add('hidden');
+    if (timer) clearInterval(timer);
+    timer = setInterval(refresh, 15000);
+  }
+}
+
+async function refresh() {
+  if (!me) return;
+  try {
+    latest = await api('GET', `/api/tournaments/${tid}/player/${me}`);
+    render();
+  } catch (err) {
+    if (String(err.message).includes('not found')) {
+      switchPlayer();
+    }
+  }
+}
+
+function switchPlayer() {
+  localStorage.removeItem(`onic-player-${tid}`);
+  me = null;
+  latest = null;
+  if (timer) clearInterval(timer);
+  $('#search-panel').classList.remove('hidden');
+  $('#result').innerHTML = '';
+  $('#q').value = '';
+  $('#matches').innerHTML = '';
+}
+
+/*
+ * Reporting is a write, so it needs the player's own code — the four characters
+ * on the slip the organizer handed them. Finding your table stays open; filing a
+ * result does not. The code is remembered per event so it is typed once.
+ */
+function codeKey() { return `onic-code-${tid}`; }
+
+function savedCode() {
+  try { return localStorage.getItem(codeKey()) || ''; } catch { return ''; }
+}
+
+async function report(outcome) {
+  const box = $('#report-note');
+  const field = $('#player-code');
+  const code = (field ? field.value : savedCode()).trim().toUpperCase();
+  if (!code) {
+    if (box) showNote(box, t('codeMissing'), 'error');
+    if (field) field.focus();
+    return;
+  }
+
+  document.querySelectorAll('.report-btn').forEach((b) => (b.disabled = true));
+  try {
+    await api('POST', `/api/tournaments/${tid}/report`, {
+      name: latest.player.name,
+      code,
+      outcome,
+    });
+    try { localStorage.setItem(codeKey(), code); } catch { /* private mode */ }
+    await refresh();
+  } catch (err) {
+    if (box) showNote(box, err.message, 'error');
+    document.querySelectorAll('.report-btn').forEach((b) => (b.disabled = false));
+  }
+}
+
+function render() {
+  const host = $('#result');
+  if (!latest) { host.innerHTML = ''; return; }
+  host.innerHTML = '';
+
+  const { match, record, player, tournament } = latest;
+
+  const card = el('section', { class: 'panel assignment' + (match && match.bye ? ' bye' : '') });
+
+  if (!match) {
+    card.appendChild(el('p', { class: 'empty', text: t('noMatch') }));
+  } else if (match.bye) {
+    card.appendChild(el('div', { class: 'caption', text: `${t('round')} ${match.round}` }));
+    card.appendChild(el('div', { class: 'table-number', text: t('byeTitle') }));
+    card.appendChild(el('p', { text: t('byeBody'), style: 'margin:0 auto' }));
+  } else {
+    const stageLabel = match.stage === 'cut'
+      ? `${t('topCutLabel')} · ${t('cutRound')} ${match.round}`
+      : `${t('round')} ${match.round}`;
+    card.appendChild(el('div', { class: 'caption', text: `${stageLabel} · ${t('tableCaption')}` }));
+    card.appendChild(el('div', { class: 'table-number', text: String(match.table) }));
+    card.appendChild(el('div', { class: 'versus' }, [
+      el('small', { text: t('versus') }),
+      match.opponent || '—',
+    ]));
+  }
+
+  if (record) {
+    card.appendChild(el('div', { class: 'record-strip' }, [
+      el('div', {}, [
+        el('div', { class: 'value', text: `${record.rank}/${record.total}` }),
+        el('div', { class: 'key', text: t('rank') }),
+      ]),
+      el('div', {}, [
+        el('div', { class: 'value', text: String(record.points) }),
+        el('div', { class: 'key', text: t('points') }),
+      ]),
+      el('div', {}, [
+        el('div', { class: 'value', text: recordText(record) }),
+        el('div', { class: 'key', text: t('record') }),
+      ]),
+    ]));
+  }
+  host.appendChild(card);
+
+  if (match && !match.bye) {
+    const box = el('section', { class: 'panel' });
+    box.appendChild(el('h2', { text: t('reportTitle') }));
+    box.appendChild(el('div', { id: 'report-note', class: 'note' }));
+
+    const mine = () => match.result === 'draw' ? t('draw')
+      : (match.result === 'p1') === match.isP1 ? t('win') : t('loss');
+
+    if (match.status === 'confirmed') {
+      showNote($('#report-note', box), `${t('confirmedMsg')} — ${mine()}`, 'good');
+    } else if (!tournament.openReporting) {
+      showNote($('#report-note', box), t('reportingClosed'), 'warn');
+    } else {
+      if (match.status === 'pending') {
+        showNote($('#report-note', box), `${t('reported')} — ${mine()}`, 'warn');
+      } else {
+        box.appendChild(el('p', { text: t('reportIntro') }));
+      }
+      box.appendChild(el('div', { class: 'field' }, [
+        el('input', {
+          id: 'player-code',
+          type: 'text',
+          maxlength: '4',
+          autocapitalize: 'characters',
+          autocomplete: 'off',
+          spellcheck: 'false',
+          placeholder: t('codePrompt'),
+          value: savedCode(),
+        }),
+        el('small', { class: 'helper', text: t('codeHelp') }),
+      ]));
+      box.appendChild(el('div', { class: 'btn-row' }, [
+        el('button', { class: match.status === 'pending' ? 'secondary report-btn' : 'report-btn',
+          text: t('win'), onClick: () => report('win') }),
+        el('button', { class: 'secondary report-btn', text: t('loss'), onClick: () => report('loss') }),
+        tournament.allowDraws
+          ? el('button', { class: 'secondary report-btn', text: t('draw'), onClick: () => report('draw') })
+          : null,
+      ]));
+    }
+    host.appendChild(box);
+  }
+
+  host.appendChild(el('div', { class: 'btn-row' }, [
+    el('button', { class: 'secondary', text: t('refresh'), onClick: refresh }),
+    el('button', { class: 'quiet', text: t('notYou'), onClick: switchPlayer }),
+  ]));
+  host.appendChild(el('p', { class: 'helper', text: `${player.name} · ${t('autoRefresh')}` }));
+}
+
+document.documentElement.lang = LANG;
+applyStaticText();
+</script>
+</body>
+</html>

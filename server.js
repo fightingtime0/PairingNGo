@@ -14,6 +14,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const swiss = require('./lib/swiss');
+const qr = require('./lib/qr');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -98,8 +99,93 @@ function withLock(id, fn) {
 
 // ------------------------------------------------------------------- auth ---
 
-function hashSecret(secret, salt) {
-  return crypto.scryptSync(secret, salt, 32).toString('hex');
+/**
+ * Password hashing. scrypt is deliberately slow, so it must never run on the
+ * event loop: crypto.scryptSync blocks every other request for the duration,
+ * which turns an unauthenticated login flood into a denial of service against
+ * the whole server. The async form hands the work to the thread pool.
+ */
+/*
+ * Async scrypt runs on libuv's thread pool, which is four threads by default
+ * and is the same pool every file read uses. Left ungated, a burst of sign-in
+ * attempts fills it and ordinary page loads queue behind the hashing. Two at a
+ * time keeps the pool available for the event itself.
+ */
+const HASH_CONCURRENCY = 2;
+let hashesRunning = 0;
+const hashQueue = [];
+
+function acquireHashSlot() {
+  if (hashesRunning < HASH_CONCURRENCY) {
+    hashesRunning += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => hashQueue.push(resolve));
+}
+
+function releaseHashSlot() {
+  const next = hashQueue.shift();
+  if (next) return next();
+  hashesRunning -= 1;
+}
+
+async function hashSecret(secret, salt) {
+  await acquireHashSlot();
+  try {
+    return await new Promise((resolve, reject) => {
+      crypto.scrypt(secret, salt, 32, (err, key) => {
+        if (err) return reject(err);
+        resolve(key.toString('hex'));
+      });
+    });
+  } finally {
+    releaseHashSlot();
+  }
+}
+
+/*
+ * Login throttle. Per-IP, in memory, deliberately tiny — it exists to stop
+ * brute force and hashing floods, not to be a general rate limiter.
+ */
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+const loginAttempts = new Map();
+
+function clientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (fwd) return String(fwd).split(',')[0].trim();
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function loginBlocked(ip) {
+  const entry = loginAttempts.get(ip);
+  if (!entry) return false;
+  if (Date.now() - entry.first > LOGIN_WINDOW_MS) {
+    loginAttempts.delete(ip);
+    return false;
+  }
+  return entry.count >= LOGIN_MAX_ATTEMPTS;
+}
+
+/*
+ * Counted BEFORE the password is checked, not after. Counting afterwards lets a
+ * burst of simultaneous attempts all pass the limit check together, since none
+ * of them has failed yet at the moment they are let through.
+ */
+function noteLoginAttempt(ip) {
+  const now = Date.now();
+  const entry = loginAttempts.get(ip);
+  if (!entry || now - entry.first > LOGIN_WINDOW_MS) {
+    loginAttempts.set(ip, { first: now, count: 1 });
+  } else {
+    entry.count += 1;
+  }
+  // Keep the map from growing without bound on a long-lived process.
+  if (loginAttempts.size > 5000) {
+    for (const [key, val] of loginAttempts) {
+      if (now - val.first > LOGIN_WINDOW_MS) loginAttempts.delete(key);
+    }
+  }
 }
 
 function checkAdmin(t, token) {
@@ -144,11 +230,20 @@ function publicView(t) {
     id: t.id,
     name: t.name,
     status: t.status,
-    settings: { rounds: t.settings.rounds, allowDraws: t.settings.allowDraws, topCut: t.settings.topCut },
+    settings: {
+      rounds: t.settings.rounds,
+      allowDraws: t.settings.allowDraws,
+      topCut: t.settings.topCut,
+      tiebreakers: t.settings.tiebreakers || 'official',
+      openReporting: t.settings.openReporting !== false,
+    },
     currentRound: round ? round.number : 0,
     pairings,
+    // PTCG IDs are real-world player identifiers and never appear in a public
+    // response. The organizer view adds them back.
     standings: standings.map((r) => ({
       rank: r.rank,
+      id: r.id,
       name: r.name,
       points: r.points,
       wins: r.wins,
@@ -158,6 +253,7 @@ function publicView(t) {
       dropped: r.dropped,
       opWinPct: r.opWinPct,
       opOpWinPct: r.opOpWinPct,
+      woScore: r.woScore,
     })),
     cut: t.cut
       ? {
@@ -185,11 +281,15 @@ function adminView(t) {
   const nameOf = new Map(t.players.map((p) => [p.id, p.name]));
   const round = t.rounds[t.rounds.length - 1] || null;
 
+  const ptcgOf = new Map(t.players.map((p) => [p.id, p.ptcgId || null]));
+
   return {
     ...base,
+    standings: base.standings.map((r) => ({ ...r, ptcgId: ptcgOf.get(r.id) || null })),
     players: t.players.map((p) => ({
       id: p.id,
       name: p.name,
+      ptcgId: p.ptcgId || null,
       code: p.code,
       dropped: !!p.dropped,
       arrivedLate: !!p.arrivedLate,
@@ -215,11 +315,19 @@ function adminView(t) {
   };
 }
 
+/**
+ * The player's match in whatever stage the event is actually in. Once the top
+ * cut starts this must read the bracket, not the last Swiss round — otherwise a
+ * player looking themselves up sees a stale, already-finished Swiss match with
+ * nothing to say it is over.
+ */
 function currentMatchFor(t, playerId) {
-  const round = t.rounds[t.rounds.length - 1];
-  if (!round) return { round: null, match: null };
+  const inCut = !!(t.cut && t.status === 'cut');
+  const pool = inCut ? t.cut.rounds : t.rounds;
+  const round = pool[pool.length - 1];
+  if (!round) return { round: null, match: null, stage: inCut ? 'cut' : 'swiss' };
   const match = round.matches.find((m) => m.p1 === playerId || m.p2 === playerId);
-  return { round, match: match || null };
+  return { round, match: match || null, stage: inCut ? 'cut' : 'swiss' };
 }
 
 // -------------------------------------------------------------- handlers ---
@@ -259,9 +367,11 @@ route('POST', /^\/api\/tournaments$/, async (req, res, body) => {
       allowDraws: body.allowDraws !== false,
       topCut: Number(body.topCut) || 0,
       language: body.language === 'en' ? 'en' : 'id',
+      tiebreakers: body.tiebreakers === 'turni' ? 'turni' : 'official',
+      openReporting: body.openReporting !== false,
     },
     passwordSalt: salt,
-    passwordHash: hashSecret(password, salt),
+    passwordHash: await hashSecret(password, salt),
     adminToken: crypto.randomBytes(24).toString('hex'),
     players: [],
     rounds: [],
@@ -273,13 +383,19 @@ route('POST', /^\/api\/tournaments$/, async (req, res, body) => {
 });
 
 route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/login$/, async (req, res, body, [id]) => {
+  const ip = clientIp(req);
+  if (loginBlocked(ip)) {
+    return send(res, 429, { error: 'Too many sign-in attempts. Wait fifteen minutes and try again.' });
+  }
+  noteLoginAttempt(ip);
   const t = await loadTournament(id);
   if (!t) return send(res, 404, { error: 'No tournament with that code.' });
-  const given = hashSecret(String(body.password || ''), t.passwordSalt);
+  const given = await hashSecret(String(body.password || ''), t.passwordSalt);
   const ok =
     given.length === t.passwordHash.length &&
     crypto.timingSafeEqual(Buffer.from(given), Buffer.from(t.passwordHash));
   if (!ok) return send(res, 401, { error: 'Wrong password.' });
+  loginAttempts.delete(ip);
   send(res, 200, { id: t.id, adminToken: t.adminToken, name: t.name });
 });
 
@@ -294,21 +410,45 @@ route('GET', /^\/api\/tournaments\/([A-Z0-9]+)$/, async (req, res, body, [id], q
   send(res, 200, checkAdmin(t, token) ? adminView(t) : publicView(t));
 });
 
-route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/lookup$/, async (req, res, body, [id]) => {
+/** Public: find players by name or PTCG ID so they can check in. */
+route('GET', /^\/api\/tournaments\/([A-Z0-9]+)\/search$/, async (req, res, body, [id], query) => {
   const t = await loadTournament(id);
   if (!t) return send(res, 404, { error: 'No tournament with that code.' });
 
-  const player = findPlayer(t, body.name, body.code);
-  if (!player) return send(res, 404, { error: 'No player found with that name and code.' });
+  const q = normalise(query.get('q') || '');
+  if (q.length < 1) return send(res, 200, { players: [] });
+
+  const matches = t.players
+    .filter((p) => normalise(p.name).includes(q) || (p.ptcgId || '').toLowerCase().includes(q))
+    .slice(0, 25)
+    // Searchable by PTCG ID, but the ID itself is never returned.
+    .map((p) => ({ id: p.id, name: p.name, dropped: !!p.dropped }));
+
+  send(res, 200, { players: matches });
+});
+
+/** Public: one player's table, opponent and record. */
+route('GET', /^\/api\/tournaments\/([A-Z0-9]+)\/player\/([a-z0-9]+)$/, async (req, res, body, [id, pid]) => {
+  const t = await loadTournament(id);
+  if (!t) return send(res, 404, { error: 'No tournament with that code.' });
+
+  const player = t.players.find((p) => p.id === pid);
+  if (!player) return send(res, 404, { error: 'Player not found.' });
 
   const standings = swiss.computeStandings(t);
   const row = standings.find((r) => r.id === player.id);
-  const { round, match } = currentMatchFor(t, player.id);
+  const { round, match, stage } = currentMatchFor(t, player.id);
   const nameOf = new Map(t.players.map((p) => [p.id, p.name]));
 
   send(res, 200, {
     player: { id: player.id, name: player.name, dropped: !!player.dropped },
-    tournament: { id: t.id, name: t.name, status: t.status, allowDraws: t.settings.allowDraws },
+    tournament: {
+      id: t.id,
+      name: t.name,
+      status: t.status,
+      allowDraws: t.settings.allowDraws,
+      openReporting: t.settings.openReporting !== false,
+    },
     record: row
       ? {
           rank: row.rank,
@@ -319,6 +459,7 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/lookup$/, async (req, res, body
           byes: row.byes,
           opWinPct: row.opWinPct,
           opOpWinPct: row.opOpWinPct,
+          woScore: row.woScore,
           total: standings.length,
         }
       : null,
@@ -326,27 +467,34 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/lookup$/, async (req, res, body
       ? {
           id: match.id,
           round: round.number,
+          stage,
           table: match.table,
           bye: match.bye,
           opponent: match.bye ? null : nameOf.get(match.p1 === player.id ? match.p2 : match.p1),
           isP1: match.p1 === player.id,
           status: match.status,
           result: match.result,
-          reportedByMe: match.reportedBy === player.id,
         }
       : null,
   });
 });
 
+/** Public: a player reports their own result. */
 route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/report$/, async (req, res, body, [id]) => {
   await withLock(id, async () => {
     const t = await loadTournament(id);
     if (!t) return send(res, 404, { error: 'No tournament with that code.' });
+    if (t.settings.openReporting === false) {
+      return send(res, 403, { error: 'The organizer has turned off self-reporting for this event.' });
+    }
 
+    // Name plus the player's own printed code. Without this the internal
+    // player id — which the public search returns — would be enough to file a
+    // result as somebody else.
     const player = findPlayer(t, body.name, body.code);
     if (!player) return send(res, 403, { error: 'Name and code do not match.' });
 
-    const { match } = currentMatchFor(t, player.id);
+    const { match, stage } = currentMatchFor(t, player.id);
     if (!match) return send(res, 404, { error: 'You have no match in the current round.' });
     if (match.bye) return send(res, 400, { error: 'You have a bye this round — nothing to report.' });
     if (match.status === 'confirmed') {
@@ -360,6 +508,9 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/report$/, async (req, res, body
     if (outcome === 'draw' && !t.settings.allowDraws) {
       return send(res, 400, { error: 'Draws are not permitted in this tournament.' });
     }
+    if (outcome === 'draw' && stage === 'cut') {
+      return send(res, 400, { error: 'A bracket match cannot be a draw.' });
+    }
 
     const isP1 = match.p1 === player.id;
     match.result = outcome === 'draw' ? 'draw' : (outcome === 'win') === isP1 ? 'p1' : 'p2';
@@ -370,6 +521,61 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/report$/, async (req, res, body
     await saveTournament(t);
     send(res, 200, { ok: true, status: match.status, result: match.result });
   });
+});
+
+/** Public: standings as CSV. */
+route('GET', /^\/api\/tournaments\/([A-Z0-9]+)\/standings\.csv$/, async (req, res, body, [id], query, headers) => {
+  const t = await loadTournament(id);
+  if (!t) return send(res, 404, { error: 'No tournament with that code.' });
+
+  // Anyone may take the standings. Only the organizer gets the PTCG ID column.
+  const token = (headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const isAdmin = checkAdmin(t, token);
+  const standings = swiss.computeStandings(t);
+  const esc = (v) => {
+    const str = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  };
+
+  const header = ['#', 'Player'];
+  if (isAdmin) header.push('PTCG ID');
+  header.push('Points', 'W', 'L', 'D', 'Byes', 'OpWin%', 'OpOpWin%', 'WOScore', 'Status');
+  const lines = [header.join(',')];
+  for (const r of standings) {
+    const row = [r.rank, esc(r.name)];
+    if (isAdmin) row.push(esc(r.ptcgId));
+    row.push(
+      r.points, r.wins, r.losses, r.draws, r.byes,
+      (r.opWinPct * 100).toFixed(2), (r.opOpWinPct * 100).toFixed(2), r.woScore,
+      r.dropped ? 'Dropped' : ''
+    );
+    lines.push(row.join(','));
+  }
+
+  const csv = '\ufeff' + lines.join('\r\n'); // BOM so Excel reads UTF-8 names correctly
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${t.id}-standings.csv"`,
+  });
+  res.end(csv);
+});
+
+/** Public: QR code pointing at this tournament's player portal. */
+route('GET', /^\/api\/tournaments\/([A-Z0-9]+)\/qr\.svg$/, async (req, res, body, [id], query, headers) => {
+  const t = await loadTournament(id);
+  if (!t) return send(res, 404, { error: 'No tournament with that code.' });
+
+  const proto = headers['x-forwarded-proto'] || 'http';
+  const host = headers.host || 'localhost';
+  const url = `${proto}://${host}/portal.html?tid=${t.id}`;
+
+  try {
+    const svg = qr.toSvg(url, { scale: Number(query.get('scale')) || 8 });
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'no-cache' });
+    res.end(svg);
+  } catch (err) {
+    send(res, 500, { error: err.message });
+  }
 });
 
 // --- organizer-only from here ---------------------------------------------
@@ -395,7 +601,20 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/players$/, (req, res, body, [id
     const skipped = [];
 
     for (const raw of names) {
-      const name = String(raw || '').trim().replace(/\s+/g, ' ');
+      let name;
+      let ptcgId = null;
+
+      if (raw && typeof raw === 'object') {
+        name = String(raw.name || '').trim().replace(/\s+/g, ' ');
+        ptcgId = raw.ptcgId ? String(raw.ptcgId).trim() : null;
+      } else {
+        // Accept "Name, id12345678" or "Name<tab>id12345678" on one line.
+        const line = String(raw || '').trim();
+        const split = line.split(/\s*[,\t]\s*/);
+        name = (split[0] || '').replace(/\s+/g, ' ');
+        ptcgId = split[1] ? split[1].trim() : null;
+      }
+
       if (!name) continue;
       if (t.players.some((p) => normalise(p.name) === normalise(name))) {
         skipped.push(name);
@@ -410,13 +629,14 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/players$/, (req, res, body, [id
       const player = {
         id: `p${crypto.randomBytes(6).toString('hex')}`,
         name,
+        ptcgId,
         code,
         seed: t.players.length + 1,
         dropped: false,
         arrivedLate: t.rounds.length > 0,
       };
       t.players.push(player);
-      added.push({ name: player.name, code: player.code });
+      added.push({ name: player.name, ptcgId: player.ptcgId, code: player.code });
     }
 
     await saveTournament(t);
@@ -454,8 +674,17 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/settings$/, (req, res, body, [i
       if (r < t.rounds.length) throw new Error(`${t.rounds.length} rounds have already been played.`);
       t.settings.rounds = r;
     }
-    if (body.topCut !== undefined) t.settings.topCut = Number(body.topCut) || 0;
+    if (body.topCut !== undefined) {
+      const c = Number(body.topCut) || 0;
+      if (![0, 2, 4, 8, 16, 32].includes(c)) throw new Error('Top cut must be 0, 2, 4, 8, 16 or 32.');
+      t.settings.topCut = c;
+    }
     if (body.allowDraws !== undefined) t.settings.allowDraws = !!body.allowDraws;
+    if (body.tiebreakers !== undefined) {
+      if (!['official', 'turni'].includes(body.tiebreakers)) throw new Error('Unknown tiebreaker mode.');
+      t.settings.tiebreakers = body.tiebreakers;
+    }
+    if (body.openReporting !== undefined) t.settings.openReporting = !!body.openReporting;
     await saveTournament(t);
     send(res, 200, { ok: true, settings: t.settings });
   })

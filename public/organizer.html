@@ -65,6 +65,13 @@
           <div class="helper">Anyone with this password can run the event. Write it down.</div>
         </div>
         <div class="field">
+          <label for="new-tb">Tiebreakers</label>
+          <select id="new-tb">
+            <option value="official" selected>Official handbook (25% floor)</option>
+            <option value="turni">Match turni.id (no floor, WOScore)</option>
+          </select>
+        </div>
+        <div class="field">
           <label><input type="checkbox" id="new-draws" checked style="width:auto;margin-right:.4rem">Allow draws</label>
         </div>
         <button class="wide" onclick="createTournament()">Create tournament</button>
@@ -143,6 +150,7 @@ async function createTournament() {
     topCut: Number($('#new-cut').value),
     password: $('#new-pw').value,
     allowDraws: $('#new-draws').checked,
+    tiebreakers: $('#new-tb').value,
   };
   try {
     const res = await api('POST', '/api/tournaments', body);
@@ -225,9 +233,23 @@ function renderHeader() {
   host.appendChild(el('p', { class: 'helper', style: 'margin-bottom:.75rem' },
     [`Tournament code `, el('strong', { class: 'code', text: data.id }),
      ` · ${data.standings.length} players · round ${data.currentRound} of ${data.settings.rounds} · ${data.status}`]));
+  const portalUrl = `${location.origin}/portal.html?tid=${data.id}`;
+  host.appendChild(el('p', { class: 'helper', style: 'margin-bottom:.75rem' }, [
+    'Player portal: ',
+    el('a', { href: portalUrl, target: '_blank', text: portalUrl }),
+  ]));
   host.appendChild(el('div', { class: 'btn-row' }, [
+    el('button', { class: 'secondary', text: 'Copy portal link',
+      onClick: () => navigator.clipboard.writeText(portalUrl)
+        .then(() => showNote(consoleNote, 'Portal link copied.', 'good'))
+        .catch(() => showNote(consoleNote, 'Could not copy — select the link above instead.', 'warn')) }),
+    el('button', { class: 'secondary', text: 'QR sheet',
+      onClick: () => window.open(`/qr.html?tid=${data.id}`, '_blank') }),
+    el('button', { class: 'secondary', text: 'Public page',
+      onClick: () => window.open(`/tournament.html?id=${data.id}`, '_blank') }),
+    el('button', { class: 'secondary', text: 'Standings CSV',
+      onClick: () => window.open(`/api/tournaments/${data.id}/standings.csv`, '_blank') }),
     el('button', { class: 'secondary', text: 'Download backup', onClick: downloadBackup }),
-    el('button', { class: 'secondary', text: 'Print player codes', onClick: printCodes }),
   ]));
 }
 
@@ -238,7 +260,7 @@ function renderPlayers() {
 
   const box = el('textarea', {
     id: 'bulk-names',
-    placeholder: 'One name per line, then Add players',
+    placeholder: 'One name per line.\nOptionally add a PTCG ID after a comma:\nRizky Pratama, id11340289',
   });
   host.appendChild(el('div', { class: 'field' }, [box]));
   host.appendChild(el('button', { class: 'wide', text: 'Add players', onClick: addPlayers }));
@@ -251,7 +273,7 @@ function renderPlayers() {
   const rows = data.players.map((p) =>
     el('tr', { class: p.dropped ? 'dropped' : '' }, [
       el('td', { text: p.name }),
-      el('td', { class: 'code', text: p.code }),
+      el('td', { class: 'helper', text: p.ptcgId || '—' }),
       el('td', { class: 'num' }, [
         el('button', {
           class: 'quiet',
@@ -268,7 +290,7 @@ function renderPlayers() {
   host.appendChild(el('div', { class: 'table-scroll', style: 'margin-top:1rem' }, [
     el('table', {}, [
       el('thead', {}, [el('tr', {}, [
-        el('th', { text: 'Name' }), el('th', { text: 'Code' }), el('th', { class: 'num', text: '' }),
+        el('th', { text: 'Name' }), el('th', { text: 'PTCG ID' }), el('th', { class: 'num', text: '' }),
       ])]),
       el('tbody', {}, rows),
     ]),
@@ -297,10 +319,20 @@ function renderSettings() {
     el('option', { value: String(n), selected: data.settings.topCut === n, text: n === 0 ? 'None' : `Top ${n}` })
   ));
   const drawsBox = el('input', { type: 'checkbox', checked: data.settings.allowDraws, style: 'width:auto;margin-right:.4rem' });
+  const openBox = el('input', { type: 'checkbox', checked: data.settings.openReporting, style: 'width:auto;margin-right:.4rem' });
+  const tbSelect = el('select', {}, [
+    el('option', { value: 'official', selected: data.settings.tiebreakers !== 'turni', text: 'Official handbook (25% floor)' }),
+    el('option', { value: 'turni', selected: data.settings.tiebreakers === 'turni', text: 'Match turni.id (no floor, WOScore)' }),
+  ]);
 
   host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Swiss rounds' }), roundsInput]));
   host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Top cut' }), cutSelect]));
+  host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Tiebreakers' }), tbSelect]));
   host.appendChild(el('div', { class: 'field' }, [el('label', {}, [drawsBox, 'Allow draws'])]));
+  host.appendChild(el('div', { class: 'field' }, [
+    el('label', {}, [openBox, 'Players may report their own results']),
+    el('div', { class: 'helper', text: 'Turn this off to enter every result yourself.' }),
+  ]));
   host.appendChild(el('button', {
     class: 'wide secondary',
     text: 'Save settings',
@@ -308,6 +340,8 @@ function renderSettings() {
       rounds: Number(roundsInput.value),
       topCut: Number(cutSelect.value),
       allowDraws: drawsBox.checked,
+      tiebreakers: tbSelect.value,
+      openReporting: openBox.checked,
     }).then(() => showNote(consoleNote, 'Settings saved.', 'good')),
   }));
 }
@@ -467,10 +501,12 @@ function renderStandings() {
     el('tr', { class: r.dropped ? 'dropped' : '' }, [
       el('td', { class: 'num', text: String(r.rank) }),
       el('td', { text: r.name }),
+      el('td', { class: 'helper', text: r.ptcgId || '—' }),
       el('td', { class: 'num', text: String(r.points) }),
       el('td', { class: 'num', text: recordText(r) }),
       el('td', { class: 'num', text: pct(r.opWinPct) }),
       el('td', { class: 'num', text: pct(r.opOpWinPct) }),
+      data.settings.tiebreakers === 'turni' ? el('td', { class: 'num', text: String(r.woScore) }) : null,
     ])
   );
 
@@ -479,10 +515,12 @@ function renderStandings() {
       el('thead', {}, [el('tr', {}, [
         el('th', { class: 'num', text: '#' }),
         el('th', { text: 'Player' }),
+        el('th', { text: 'PTCG ID' }),
         el('th', { class: 'num', text: 'Pts' }),
         el('th', { class: 'num', text: 'W–L–D' }),
         el('th', { class: 'num', text: 'Op Win %' }),
         el('th', { class: 'num', text: 'Op Op Win %' }),
+        data.settings.tiebreakers === 'turni' ? el('th', { class: 'num', text: 'WOScore' }) : null,
       ])]),
       el('tbody', {}, rows),
     ]),
@@ -505,32 +543,6 @@ async function downloadBackup() {
   URL.revokeObjectURL(url);
 }
 
-function printCodes() {
-  const win = window.open('', '_blank');
-  if (!win) return;
-  const rows = data.players
-    .map((p) => `<tr><td>${escapeHtml(p.name)}</td><td class="c">${p.code}</td></tr>`)
-    .join('');
-  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(data.name)} — player codes</title>
-  <style>
-    body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;padding:2rem;color:#14213d}
-    h1{font-size:1.3rem;margin:0 0 .25rem}
-    p{color:#555;margin:0 0 1.5rem;font-size:.9rem}
-    table{width:100%;border-collapse:collapse;font-size:1rem}
-    td{padding:.45rem .5rem;border-bottom:1px solid #ccc}
-    .c{font-weight:700;letter-spacing:.1em;text-align:right;width:6rem}
-  </style></head><body>
-  <h1>${escapeHtml(data.name)}</h1>
-  <p>Tournament code <strong>${data.id}</strong> — players enter their name and code at the player page.</p>
-  <table>${rows}</table></body></html>`);
-  win.document.close();
-  win.print();
-}
-
-function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
 </script>
 </body>
 </html>

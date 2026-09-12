@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QR — Onic TCG</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="masthead no-print">
+  <div class="brand">Onic TCG <span data-t="brand">Turnamen</span></div>
+  <button class="quiet" style="color:#cfdcf2" onclick="window.print()">Print</button>
+  <button class="quiet" style="color:#cfdcf2" onclick="toggleLang()" data-t="switchLang">English</button>
+</header>
+
+<main class="qr-sheet">
+  <h1 id="title">…</h1>
+  <p style="margin:0 auto 1.5rem" data-t="scanToCheckIn">Pindai untuk cek meja kamu</p>
+  <div class="qr-box"><img id="qr" alt="QR"></div>
+  <div class="url" id="url"></div>
+</main>
+
+<script src="/app.js"></script>
+<script>
+const tid = (new URLSearchParams(location.search).get('tid') || '').toUpperCase();
+const portalUrl = `${location.origin}/portal.html?tid=${tid}`;
+
+$('#qr').src = `/api/tournaments/${tid}/qr.svg?scale=10`;
+$('#url').textContent = portalUrl;
+
+api('GET', `/api/tournaments/${tid}`)
+  .then((d) => { $('#title').textContent = d.name; })
+  .catch((err) => { $('#title').textContent = err.message; });
+
+document.documentElement.lang = LANG;
+applyStaticText();
+</script>
+</body>
+</html>

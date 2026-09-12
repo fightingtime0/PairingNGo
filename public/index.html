@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Onic TCG — Tournament</title>
+<title>Onic TCG — Turnamen</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -14,226 +14,74 @@
   <button class="quiet" style="color:#cfdcf2" onclick="toggleLang()" data-t="switchLang">English</button>
 </header>
 
-<main class="wrap">
+<main class="wrap-wide">
+  <h1 data-t="allTournaments">Semua turnamen</h1>
+  <p class="helper" style="margin-bottom:1.25rem" data-t="listIntro">Pilih turnamen untuk melihat klasemen dan pairing.</p>
 
-  <section id="lookup-panel" class="panel">
-    <h1 data-t="playerTitle">Cek meja kamu</h1>
-    <p data-t="playerIntro">Masukkan nama dan kode yang diberikan panitia.</p>
+  <div class="field" style="max-width:24rem">
+    <input id="filter" type="text" data-t-ph="searchTournament" placeholder="Cari turnamen">
+  </div>
 
-    <div id="lookup-note" class="note"></div>
-
-    <div class="field">
-      <label for="event" data-t="eventCode">Kode turnamen</label>
-      <input id="event" type="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="5">
-    </div>
-    <div class="field">
-      <label for="name" data-t="yourName">Nama kamu</label>
-      <input id="name" type="text" autocomplete="name" spellcheck="false">
-    </div>
-    <div class="field">
-      <label for="code" data-t="yourCode">Kode kamu</label>
-      <input id="code" type="text" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="4">
-    </div>
-    <button class="wide" id="lookup-btn" data-t="check">Cek</button>
-  </section>
-
-  <div id="result"></div>
-
+  <div id="list"></div>
 </main>
 
 <script src="/app.js"></script>
 <script>
-let session = null;   // { event, name, code }
-let latest = null;    // last lookup payload
-let timer = null;
+let all = [];
 
-const noteEl = $('#lookup-note');
-
-$('#lookup-btn').addEventListener('click', doLookup);
-['event', 'name', 'code'].forEach((id) => {
-  $('#' + id).addEventListener('keydown', (e) => { if (e.key === 'Enter') doLookup(); });
-});
-
-// Uppercase the code fields as they type — codes are always upper case.
-['event', 'code'].forEach((id) => {
-  $('#' + id).addEventListener('input', (e) => {
-    const pos = e.target.selectionStart;
-    e.target.value = e.target.value.toUpperCase();
-    e.target.setSelectionRange(pos, pos);
-  });
-});
-
-// Remember the last successful sign-in so a player refreshing mid-event
-// does not have to retype their code.
-const saved = localStorage.getItem('onic-session');
-if (saved) {
+async function load() {
+  const host = $('#list');
   try {
-    session = JSON.parse(saved);
-    $('#event').value = session.event;
-    $('#name').value = session.name;
-    $('#code').value = session.code;
-    doLookup();
-  } catch { /* ignore corrupt value */ }
-}
-
-async function doLookup() {
-  const event = $('#event').value.trim().toUpperCase();
-  const name = $('#name').value.trim();
-  const code = $('#code').value.trim().toUpperCase();
-
-  if (!event || !name || !code) {
-    showNote(noteEl, t('notFound'), 'error');
-    return;
-  }
-
-  $('#lookup-btn').disabled = true;
-  $('#lookup-btn').textContent = t('checking');
-  showNote(noteEl, '');
-
-  try {
-    const data = await api('POST', `/api/tournaments/${event}/lookup`, { name, code });
-    session = { event, name, code };
-    localStorage.setItem('onic-session', JSON.stringify(session));
-    latest = data;
-    $('#lookup-panel').classList.add('hidden');
+    const data = await api('GET', '/api/tournaments');
+    all = data.tournaments;
     render();
-    startPolling();
   } catch (err) {
-    showNote(noteEl, err.message || t('notFound'), 'error');
-  } finally {
-    $('#lookup-btn').disabled = false;
-    $('#lookup-btn').textContent = t('check');
+    host.innerHTML = '';
+    host.appendChild(el('div', { class: 'note error', text: err.message }));
   }
-}
-
-async function refresh() {
-  if (!session) return;
-  try {
-    latest = await api('POST', `/api/tournaments/${session.event}/lookup`, {
-      name: session.name,
-      code: session.code,
-    });
-    render();
-  } catch { /* transient — keep showing the last good state */ }
-}
-
-function startPolling() {
-  if (timer) clearInterval(timer);
-  timer = setInterval(refresh, 15000);
-}
-
-async function report(outcome) {
-  document.querySelectorAll('.report-btn').forEach((b) => (b.disabled = true));
-  try {
-    await api('POST', `/api/tournaments/${session.event}/report`, {
-      name: session.name,
-      code: session.code,
-      outcome,
-    });
-    await refresh();
-  } catch (err) {
-    const box = $('#report-note');
-    if (box) showNote(box, err.message, 'error');
-    document.querySelectorAll('.report-btn').forEach((b) => (b.disabled = false));
-  }
-}
-
-function signOut() {
-  localStorage.removeItem('onic-session');
-  session = null;
-  latest = null;
-  if (timer) clearInterval(timer);
-  $('#lookup-panel').classList.remove('hidden');
-  $('#result').innerHTML = '';
 }
 
 function render() {
-  const host = $('#result');
-  if (!latest) { host.innerHTML = ''; return; }
+  const host = $('#list');
   host.innerHTML = '';
 
-  const { match, record, player, tournament } = latest;
+  const needle = normaliseText($('#filter').value);
+  const rows = all.filter((t) => !needle || normaliseText(t.name).includes(needle));
 
-  // --- the one thing a player actually came here for ---------------------
-  const card = el('section', { class: 'panel assignment' + (match && match.bye ? ' bye' : '') });
+  if (!rows.length) {
+    host.appendChild(el('p', { class: 'empty', text: t('noTournaments') }));
+    return;
+  }
 
-  if (!match) {
-    card.appendChild(el('p', { class: 'empty', text: t('noMatch') }));
-  } else if (match.bye) {
-    card.appendChild(el('div', { class: 'caption', text: `${t('round')} ${match.round}` }));
-    card.appendChild(el('div', { class: 'table-number', text: t('byeTitle') }));
-    card.appendChild(el('p', { text: t('byeBody'), style: 'margin:0 auto' }));
-  } else {
-    card.appendChild(el('div', { class: 'caption', text: `${t('round')} ${match.round} · ${t('tableCaption')}` }));
-    card.appendChild(el('div', { class: 'table-number', text: String(match.table) }));
-    card.appendChild(el('div', { class: 'versus' }, [
-      el('small', { text: t('versus') }),
-      match.opponent || '—',
+  for (const item of rows) {
+    const progress = item.rounds > 0 ? `${item.rounds}/${item.totalRounds} ${t('roundsWord')}` : null;
+    host.appendChild(el('a', { class: 'listing', href: `/tournament.html?id=${item.id}` }, [
+      el('div', { class: 'listing-main' }, [
+        el('div', { class: 'listing-name', text: item.name }),
+        el('div', { class: 'listing-meta', text:
+          [`${item.players} ${t('playersWord')}`, progress, formatDate(item.createdAt)].filter(Boolean).join(' · ') }),
+      ]),
+      el('span', { class: 'status ' + item.status, text: t('status_' + item.status) || item.status }),
     ]));
   }
-
-  if (record) {
-    card.appendChild(el('div', { class: 'record-strip' }, [
-      el('div', {}, [
-        el('div', { class: 'value', text: `${record.rank}/${record.total}` }),
-        el('div', { class: 'key', text: t('rank') }),
-      ]),
-      el('div', {}, [
-        el('div', { class: 'value', text: String(record.points) }),
-        el('div', { class: 'key', text: t('points') }),
-      ]),
-      el('div', {}, [
-        el('div', { class: 'value', text: recordText(record) }),
-        el('div', { class: 'key', text: t('record') }),
-      ]),
-    ]));
-  }
-  host.appendChild(card);
-
-  // --- reporting ---------------------------------------------------------
-  if (match && !match.bye) {
-    const box = el('section', { class: 'panel' });
-    box.appendChild(el('h2', { text: t('reportTitle') }));
-    box.appendChild(el('div', { id: 'report-note', class: 'note' }));
-
-    if (match.status === 'confirmed') {
-      const mine = match.result === 'draw' ? t('draw')
-        : (match.result === 'p1') === match.isP1 ? t('win') : t('loss');
-      showNote($('#report-note', box), `${t('confirmedMsg')} — ${mine}`, 'good');
-    } else if (match.status === 'pending') {
-      const mine = match.result === 'draw' ? t('draw')
-        : (match.result === 'p1') === match.isP1 ? t('win') : t('loss');
-      showNote($('#report-note', box), `${t('reported')} — ${mine}`, 'warn');
-      box.appendChild(el('div', { class: 'btn-row' }, [
-        el('button', { class: 'secondary report-btn', text: t('win'), onClick: () => report('win') }),
-        el('button', { class: 'secondary report-btn', text: t('loss'), onClick: () => report('loss') }),
-        tournament.allowDraws
-          ? el('button', { class: 'secondary report-btn', text: t('draw'), onClick: () => report('draw') })
-          : null,
-      ]));
-    } else {
-      box.appendChild(el('p', { text: t('reportIntro') }));
-      box.appendChild(el('div', { class: 'btn-row' }, [
-        el('button', { class: 'report-btn', text: t('win'), onClick: () => report('win') }),
-        el('button', { class: 'secondary report-btn', text: t('loss'), onClick: () => report('loss') }),
-        tournament.allowDraws
-          ? el('button', { class: 'secondary report-btn', text: t('draw'), onClick: () => report('draw') })
-          : null,
-      ]));
-    }
-    host.appendChild(box);
-  }
-
-  const footer = el('div', { class: 'btn-row' }, [
-    el('button', { class: 'secondary', text: t('refresh'), onClick: refresh }),
-    el('button', { class: 'quiet', text: t('backToLookup'), onClick: signOut }),
-  ]);
-  host.appendChild(footer);
-  host.appendChild(el('p', { class: 'helper', text: `${player.name} · ${tournament.name} · ${t('autoRefresh')}` }));
 }
 
+function normaliseText(str) {
+  return String(str || '').trim().toLowerCase();
+}
+
+function formatDate(iso) {
+  try {
+    return new Date(iso).toLocaleDateString(LANG === 'id' ? 'id-ID' : 'en-GB',
+      { day: 'numeric', month: 'short', year: 'numeric' });
+  } catch { return ''; }
+}
+
+$('#filter').addEventListener('input', render);
 document.documentElement.lang = LANG;
 applyStaticText();
+load();
+setInterval(load, 30000);
 </script>
 </body>
 </html>

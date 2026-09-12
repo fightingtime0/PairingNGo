@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turnamen — Onic TCG</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="brand">Onic TCG <span data-t="brand">Turnamen</span></div>
+  <a href="/" data-t="allTournaments">Semua turnamen</a>
+  <button class="quiet" style="color:#cfdcf2" onclick="toggleLang()" data-t="switchLang">English</button>
+</header>
+
+<main class="wrap-wide">
+  <h1 id="title">…</h1>
+  <p class="helper" id="meta" style="margin-bottom:.75rem"></p>
+
+  <div class="btn-row" style="margin-bottom:1.25rem">
+    <a id="portal-link" class="button-link" href="#"></a>
+    <a id="qr-link" href="#"></a>
+    <a id="csv-link" href="#"></a>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+  <div id="panel"></div>
+</main>
+
+<script src="/app.js"></script>
+<script>
+const id = (new URLSearchParams(location.search).get('id') || '').toUpperCase();
+let data = null;
+let tab = new URLSearchParams(location.search).get('tab') || 'standings';
+
+async function load() {
+  try {
+    data = await api('GET', `/api/tournaments/${id}`);
+    render();
+  } catch (err) {
+    $('#title').textContent = err.message;
+  }
+}
+
+function render() {
+  $('#title').textContent = data.name;
+  $('#meta').textContent =
+    `${t('status_' + data.status)} · ${t('round')} ${data.currentRound}/${data.settings.rounds} · ${data.standings.length} ${t('playersWord')}`;
+
+  const portal = $('#portal-link');
+  portal.href = `/portal.html?tid=${id}`;
+  portal.textContent = t('playerPortal');
+
+  const qr = $('#qr-link');
+  qr.href = `/qr.html?tid=${id}`;
+  qr.textContent = 'QR';
+
+  const csv = $('#csv-link');
+  csv.href = `/api/tournaments/${id}/standings.csv`;
+  csv.textContent = t('downloadCsv');
+
+  const tabs = $('#tabs');
+  tabs.innerHTML = '';
+  const available = [['standings', 'tabStandings'], ['rounds', 'tabRounds'], ['players', 'tabPlayers']];
+  if (data.cut) available.push(['topcut', 'tabTopCut']);
+
+  for (const [key, label] of available) {
+    tabs.appendChild(el('button', {
+      text: t(label),
+      'aria-selected': String(tab === key),
+      onClick: () => { tab = key; render(); },
+    }));
+  }
+
+  const panel = $('#panel');
+  panel.innerHTML = '';
+  if (tab === 'standings') renderStandings(panel);
+  else if (tab === 'rounds') renderRounds(panel);
+  else if (tab === 'players') renderPlayers(panel);
+  else renderTopCut(panel);
+}
+
+function renderStandings(host) {
+  if (!data.standings.length) {
+    host.appendChild(el('p', { class: 'empty', text: t('noTournaments') }));
+    return;
+  }
+  const turni = data.settings.tiebreakers === 'turni';
+
+  const rows = data.standings.map((r) =>
+    el('tr', { class: r.dropped ? 'dropped' : '' }, [
+      el('td', { class: 'num', text: String(r.rank) }),
+      el('td', { text: r.name }),
+      el('td', { class: 'num', text: String(r.points) }),
+      el('td', { class: 'num', text: recordText(r) }),
+      el('td', { class: 'num', text: pct(r.opWinPct) }),
+      el('td', { class: 'num', text: pct(r.opOpWinPct) }),
+      turni ? el('td', { class: 'num', text: String(r.woScore) }) : null,
+    ])
+  );
+
+  host.appendChild(el('div', { class: 'panel' }, [
+    el('div', { class: 'table-scroll' }, [
+      el('table', {}, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { class: 'num', text: '#' }),
+          el('th', { text: t('player') }),
+          el('th', { class: 'num', text: t('points') }),
+          el('th', { class: 'num', text: 'W–L–D' }),
+          el('th', { class: 'num', text: turni ? 'OMW%' : 'Op Win %' }),
+          el('th', { class: 'num', text: turni ? 'AVOMW%' : 'Op Op Win %' }),
+          turni ? el('th', { class: 'num', text: 'WOScore' }) : null,
+        ])]),
+        el('tbody', {}, rows),
+      ]),
+    ]),
+    el('p', { class: 'helper', style: 'margin-top:.75rem', text: t('tiebreakNote') }),
+  ]));
+}
+
+function renderRounds(host) {
+  if (!data.pairings.length) {
+    host.appendChild(el('p', { class: 'empty', text: t('noRounds') }));
+    return;
+  }
+  const rows = data.pairings.map((m) =>
+    el('tr', {}, [
+      el('td', { class: 'num', text: m.bye ? '—' : String(m.table) }),
+      el('td', { class: m.result === 'p1' ? 'win' : '', text: m.p1 }),
+      el('td', { class: m.result === 'p2' ? 'win' : '', text: m.bye ? 'bye' : m.p2 }),
+      el('td', { text: m.status === 'confirmed'
+        ? (m.result === 'draw' ? t('draw') : '✓')
+        : m.status === 'pending' ? '…' : '' }),
+    ])
+  );
+  host.appendChild(el('div', { class: 'panel' }, [
+    el('h2', { text: `${t('round')} ${data.currentRound}` }),
+    el('div', { class: 'table-scroll' }, [
+      el('table', {}, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { class: 'num', text: t('table') }),
+          el('th', { text: t('player') }),
+          el('th', { text: t('opponent') }),
+          el('th', { text: t('result') }),
+        ])]),
+        el('tbody', {}, rows),
+      ]),
+    ]),
+  ]));
+}
+
+function renderPlayers(host) {
+  const rows = data.standings
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((r) =>
+      el('tr', { class: r.dropped ? 'dropped' : '' }, [
+        el('td', { text: r.name }),
+        el('td', { class: 'num', text: recordText(r) }),
+      ])
+    );
+  host.appendChild(el('div', { class: 'panel' }, [
+    el('div', { class: 'table-scroll' }, [
+      el('table', {}, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { text: t('player') }),
+          el('th', { class: 'num', text: 'W–L–D' }),
+        ])]),
+        el('tbody', {}, rows),
+      ]),
+    ]),
+  ]));
+}
+
+function renderTopCut(host) {
+  if (!data.cut) {
+    host.appendChild(el('p', { class: 'empty', text: t('noTopCut') }));
+    return;
+  }
+  const board = el('div', { class: 'bracket' });
+  for (const round of data.cut.rounds) {
+    const remaining = data.cut.size / Math.pow(2, round.number - 1);
+    const col = el('div', { class: 'bracket-round' }, [
+      el('h4', { text: remaining === 2 ? 'Final' : remaining === 4 ? 'Semi' : `Top ${remaining}` }),
+    ]);
+    for (const m of round.matches) {
+      col.appendChild(el('div', { class: 'bracket-match' }, [
+        el('div', { class: m.result === 'p1' ? 'win' : '', text: m.p1 }),
+        el('div', { class: m.result === 'p2' ? 'win' : '', text: m.p2 }),
+      ]));
+    }
+    board.appendChild(col);
+  }
+  host.appendChild(el('div', { class: 'panel' }, [board]));
+}
+
+document.documentElement.lang = LANG;
+applyStaticText();
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>

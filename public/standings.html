@@ -15,6 +15,22 @@
 <script>
 const id = new URLSearchParams(location.search).get('id');
 let view = 'standings';
+let latest = null;
+
+/*
+ * Views rotate. Once the top cut starts the bracket joins the rotation and the
+ * stale final-Swiss pairings drop out of it — otherwise this screen shows the
+ * last Swiss round for the whole bracket.
+ */
+function viewsFor(data) {
+  if (data && data.cut) return ['cut', 'standings'];
+  return ['standings', 'pairings'];
+}
+
+function titleFor(data) {
+  if (view === 'cut') return t('tabTopCut');
+  return view === 'standings' ? t('standings') : t('pairings');
+}
 
 async function refresh() {
   if (!id) {
@@ -23,7 +39,11 @@ async function refresh() {
   }
   try {
     const data = await api('GET', `/api/tournaments/${id}`);
-    $('#title').textContent = `${data.name} — ${view === 'standings' ? t('standings') : t('pairings')} · ${t('round')} ${data.currentRound}`;
+    latest = data;
+    // If the cut has started and we are still parked on a Swiss-only view, move.
+    if (!viewsFor(data).includes(view)) view = viewsFor(data)[0];
+    const suffix = view === 'cut' ? '' : ` · ${t('round')} ${data.currentRound}`;
+    $('#title').textContent = `${data.name} — ${titleFor(data)}${suffix}`;
     render(data);
   } catch (err) {
     $('#title').textContent = err.message;
@@ -34,7 +54,26 @@ function render(data) {
   const host = $('#body');
   host.innerHTML = '';
 
-  if (view === 'pairings') {
+  if (view === 'cut' && data.cut) {
+    for (const round of data.cut.rounds) {
+      const rows = round.matches.map((m) =>
+        el('tr', {}, [
+          el('td', { class: 'num', text: String(m.table) }),
+          el('td', { class: m.result === 'p1' ? 'win' : '', text: m.p1 }),
+          el('td', { class: m.result === 'p2' ? 'win' : '', text: m.p2 }),
+        ])
+      );
+      host.appendChild(el('h2', { text: `${t('topCutLabel')} ${data.cut.size} · ${t('cutRound')} ${round.number}` }));
+      host.appendChild(el('table', {}, [
+        el('thead', {}, [el('tr', {}, [
+          el('th', { class: 'num', text: t('table') }),
+          el('th', { text: t('player') }),
+          el('th', { text: t('opponent') }),
+        ])]),
+        el('tbody', {}, rows),
+      ]));
+    }
+  } else if (view === 'pairings') {
     const rows = data.pairings.map((m) =>
       el('tr', {}, [
         el('td', { class: 'num', text: m.bye ? '—' : String(m.table) }),
@@ -44,7 +83,7 @@ function render(data) {
     );
     host.appendChild(el('table', {}, [
       el('thead', {}, [el('tr', {}, [
-        el('th', { class: 'num', text: 'Meja' }), el('th', { text: t('player') }), el('th', { text: t('player') }),
+        el('th', { class: 'num', text: t('table') }), el('th', { text: t('player') }), el('th', { text: t('opponent') }),
       ])]),
       el('tbody', {}, rows),
     ]));
@@ -72,7 +111,11 @@ function render(data) {
 }
 
 // Alternate between standings and pairings so one screen covers both.
-setInterval(() => { view = view === 'standings' ? 'pairings' : 'standings'; refresh(); }, 20000);
+setInterval(() => {
+  const views = viewsFor(latest);
+  view = views[(views.indexOf(view) + 1) % views.length];
+  refresh();
+}, 20000);
 setInterval(refresh, 10000);
 refresh();
 </script>
