@@ -9,8 +9,12 @@ server, no build step. Just Node and a folder of JSON files.
 - Organizer console for running the event
 - Swiss pairings with a choice of two tiebreaker systems
 - Single-elimination top cut
+- **A round gate**: nothing advances until the organizer signs the round off
+- **A round timer** shared by every screen in the venue
+- **Ties as a draw or as a double loss**, set per event
 - Standings export to CSV
 - Indonesian and English, switchable
+- Light and dark themes, following the device or switched by hand
 - One-click backup download
 
 ## What is in here
@@ -211,8 +215,11 @@ several phone browsers block form submission over plain HTTP, so do not skip thi
 4. Pair round 1.
 5. Players find their name in the portal and see their table. They report their own
    result; you confirm it.
-6. Confirm everything, pair the next round, repeat.
-7. Start the top cut when Swiss is done.
+6. When every result is in, press **Confirm round**. Nothing is paired, cut or
+   advanced until you do.
+7. Pair the next round, repeat.
+8. Start the top cut when Swiss is done. The bracket has the same gate on every
+   round.
 
 Round count is editable at any time — raise it mid-event if more people turn up
 than you expected.
@@ -224,6 +231,8 @@ standings and current pairings, no interaction needed.
 
 - **Standings only move on confirmed results.** A player reporting does not change
   anything until you press confirm. Rows waiting on you are highlighted.
+- **A confirmed round is read-only.** Its results show as text rather than buttons.
+  Reopen the round, or reopen the one match, to change anything.
 - **Late arrivals** are automatically flagged if added after round 1, and are ranked
   below on-time players when everything else is tied.
 - **Dropping** a player keeps their earlier results in everyone's tiebreakers, which
@@ -231,6 +240,81 @@ standings and current pairings, no interaction needed.
 - **Re-pair** is available until you confirm a result in that round.
 - **Download backup** before each round. It is a plain JSON file. If the server dies
   you still have every result, and you can finish on paper.
+
+## The round gate
+
+Confirming a match and confirming a round are two different things, and the
+second one is the point.
+
+Confirming a **match** says the two players at that table agree on what happened.
+Confirming a **round** says you have looked at the round as a whole and are happy
+for the event to move past it. Until you do, `Pair next round`, `Start top cut`
+and `Advance bracket` are all refused — by the server, not only by a greyed-out
+button.
+
+This exists because of a specific failure. On another platform, an event had all
+ten boards of round 5 marked Double Loss in one action, with no undo; the event
+sat frozen at 5 of 6 rounds. Two-step confirmation per match would not have
+caught it — each board was individually "confirmed". What was missing was a
+moment where a person looks at the round before the tournament advances into a
+state nobody can reverse.
+
+So the gate is deliberately a second, separate act, and it is reversible:
+
+- **Confirm round** is only enabled once every match in it is confirmed.
+- **Reopen round** unlocks it again, and reopening any single match reopens the
+  round it sits in automatically — your sign-off no longer describes what is in
+  the round, so it is withdrawn.
+- A locked round refuses result edits outright.
+
+If something goes wrong at a venue and you need out, every gated endpoint still
+accepts `{"force": true}`. It is not on any button; it is the escape hatch for
+the night a tournament gets into a state the rules did not anticipate.
+
+## The round timer
+
+Off by default. Switch it on in Settings and set a round length, and the clock
+starts the moment each round is paired. It appears on the organizer console, the
+public rounds tab, the player portal and the venue screen.
+
+It is stored as **the instant the round ends**, not as a countdown the server
+ticks down. Every client subtracts that instant from its own clock, so thirty
+phones and the projector all show the same number without the server writing once
+a second — and a phone that has been asleep for ten minutes shows the right
+number the moment it wakes rather than resuming where it left off. Each response
+also carries the server's own clock, so a device whose time is wrong still counts
+down with everyone else.
+
+Pause, Reset and +5 min are on the organizer console. Confirming a round stops
+its clock.
+
+## Ties: draw or double loss
+
+Set per event, in Settings.
+
+- **Draw** — the default and the handbook behaviour. One point each, recorded as
+  a draw.
+- **Double loss** — nothing to either player, recorded as a loss for both. This
+  is how a timed-out table is scored at some events.
+
+The result is stored as a tie either way; only its scoring changes. That means
+switching the setting mid-event **rescores** what has already been reported and
+never rewrites it, and switching back restores the original figures exactly. The
+W–L–D column becomes W–L in double-loss mode, because there are no draws to show.
+
+Ties can still be switched off entirely with **Allow draws**, which is a separate
+question: `allowDraws` decides whether a tie may be reported at all, `tieMode`
+decides what it is worth.
+
+## Themes
+
+Light by default, Nightshade dark on a device that asks for dark, and a switch in
+the masthead that overrides both. The choice is remembered per browser. Both
+palettes are defined as the same set of tokens at the top of `public/app.css`, so
+a third theme is one more block of values and no restructuring.
+
+The printable QR sheet stays black-on-white in every theme — a phone camera needs
+that contrast, and a dark QR code on a dark background does not scan.
 
 ## Tiebreakers
 

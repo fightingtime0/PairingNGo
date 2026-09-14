@@ -10,7 +10,8 @@
 
 <header class="masthead">
   <div class="brand">Onic TCG <span data-t="brand">Turnamen</span></div>
-  <button class="quiet" style="color:#cfdcf2" onclick="toggleLang()" data-t="switchLang">English</button>
+  <button class="theme-toggle" onclick="toggleLang()" data-t="switchLang">English</button>
+  <button class="theme-toggle" onclick="toggleTheme()" data-theme-toggle>Dark mode</button>
 </header>
 
 <main class="wrap">
@@ -41,6 +42,7 @@ let me = null;     // chosen player id
 let latest = null;
 let timer = null;
 let searchTimer = null;
+let clockNode = null; // repainted every second from the round's end time
 
 $('#standings-link').href = `/tournament.html?id=${tid}`;
 
@@ -108,6 +110,7 @@ async function refresh() {
   if (!me) return;
   try {
     latest = await api('GET', `/api/tournaments/${tid}/player/${me}`);
+    noteServerTime(latest.serverNow);
     render();
   } catch (err) {
     if (String(err.message).includes('not found')) {
@@ -165,10 +168,21 @@ async function report(outcome) {
 
 function render() {
   const host = $('#result');
+  clockNode = null;
   if (!latest) { host.innerHTML = ''; return; }
   host.innerHTML = '';
 
   const { match, record, player, tournament } = latest;
+
+  // The same clock the organizer and the venue screen are watching.
+  if (tournament.timerEnabled && latest.timer && match && !match.bye) {
+    clockNode = el('div', { class: 'clock' });
+    paintClock(clockNode, latest.timer);
+    host.appendChild(el('div', { class: 'clockbar' }, [
+      clockNode,
+      el('span', { class: 'helper', style: 'margin:0', text: t('roundTimer') }),
+    ]));
+  }
 
   const card = el('section', { class: 'panel assignment' + (match && match.bye ? ' bye' : '') });
 
@@ -201,8 +215,8 @@ function render() {
         el('div', { class: 'key', text: t('points') }),
       ]),
       el('div', {}, [
-        el('div', { class: 'value', text: recordText(record) }),
-        el('div', { class: 'key', text: t('record') }),
+        el('div', { class: 'value', text: recordText(record, tournament) }),
+        el('div', { class: 'key', text: recordHead(tournament) }),
       ]),
     ]));
   }
@@ -213,7 +227,9 @@ function render() {
     box.appendChild(el('h2', { text: t('reportTitle') }));
     box.appendChild(el('div', { id: 'report-note', class: 'note' }));
 
-    const mine = () => match.result === 'draw' ? t('draw')
+    // A tie reads back as whatever this event calls it.
+    const tieWord = tournament.tieMode === 'doubleLoss' ? t('doubleLoss') : t('draw');
+    const mine = () => match.result === 'draw' ? tieWord
       : (match.result === 'p1') === match.isP1 ? t('win') : t('loss');
 
     if (match.status === 'confirmed') {
@@ -244,7 +260,7 @@ function render() {
           text: t('win'), onClick: () => report('win') }),
         el('button', { class: 'secondary report-btn', text: t('loss'), onClick: () => report('loss') }),
         tournament.allowDraws
-          ? el('button', { class: 'secondary report-btn', text: t('draw'), onClick: () => report('draw') })
+          ? el('button', { class: 'secondary report-btn', text: tieWord, onClick: () => report('draw') })
           : null,
       ]));
     }
@@ -257,6 +273,11 @@ function render() {
   ]));
   host.appendChild(el('p', { class: 'helper', text: `${player.name} · ${t('autoRefresh')}` }));
 }
+
+// The countdown is recomputed locally; the poll above only refreshes the data.
+setInterval(() => {
+  if (clockNode && latest) paintClock(clockNode, latest.timer);
+}, 1000);
 
 document.documentElement.lang = LANG;
 applyStaticText();

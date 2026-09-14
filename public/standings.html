@@ -16,6 +16,7 @@
 const id = new URLSearchParams(location.search).get('id');
 let view = 'standings';
 let latest = null;
+let clockNode = null;
 
 /*
  * Views rotate. Once the top cut starts the bracket joins the rotation and the
@@ -40,6 +41,7 @@ async function refresh() {
   try {
     const data = await api('GET', `/api/tournaments/${id}`);
     latest = data;
+    noteServerTime(data.serverNow);
     // If the cut has started and we are still parked on a Swiss-only view, move.
     if (!viewsFor(data).includes(view)) view = viewsFor(data)[0];
     const suffix = view === 'cut' ? '' : ` · ${t('round')} ${data.currentRound}`;
@@ -53,6 +55,15 @@ async function refresh() {
 function render(data) {
   const host = $('#body');
   host.innerHTML = '';
+  clockNode = null;
+
+  // Across the room the clock is the second thing anyone looks for, so it sits
+  // above whichever face is showing rather than inside one of them.
+  if (data.settings.timerEnabled && data.timer) {
+    clockNode = el('div', { class: 'clock' });
+    paintClock(clockNode, data.timer);
+    host.appendChild(el('div', { class: 'clockbar' }, [clockNode]));
+  }
 
   if (view === 'cut' && data.cut) {
     for (const round of data.cut.rounds) {
@@ -93,7 +104,7 @@ function render(data) {
         el('td', { class: 'num', text: String(r.rank) }),
         el('td', { text: r.name }),
         el('td', { class: 'num', text: String(r.points) }),
-        el('td', { class: 'num', text: recordText(r) }),
+        el('td', { class: 'num', text: recordText(r, data.settings) }),
         el('td', { class: 'num', text: pct(r.opWinPct) }),
       ])
     );
@@ -102,13 +113,18 @@ function render(data) {
         el('th', { class: 'num', text: '#' }),
         el('th', { text: t('player') }),
         el('th', { class: 'num', text: t('points') }),
-        el('th', { class: 'num', text: 'W–L–D' }),
+        el('th', { class: 'num', text: recordHead(data.settings) }),
         el('th', { class: 'num', text: 'Op Win %' }),
       ])]),
       el('tbody', {}, rows),
     ]));
   }
 }
+
+// The clock is redrawn locally every second; the data poll below is slower.
+setInterval(() => {
+  if (clockNode && latest) paintClock(clockNode, latest.timer);
+}, 1000);
 
 // Alternate between standings and pairings so one screen covers both.
 setInterval(() => {

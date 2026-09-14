@@ -11,7 +11,8 @@
 <header class="masthead">
   <div class="brand">Onic TCG <span data-t="brand">Turnamen</span></div>
   <a href="/" data-t="allTournaments">Semua turnamen</a>
-  <button class="quiet" style="color:#cfdcf2" onclick="toggleLang()" data-t="switchLang">English</button>
+  <button class="theme-toggle" onclick="toggleLang()" data-t="switchLang">English</button>
+  <button class="theme-toggle" onclick="toggleTheme()" data-theme-toggle>Dark mode</button>
 </header>
 
 <main class="wrap-wide">
@@ -32,11 +33,13 @@
 <script>
 const id = (new URLSearchParams(location.search).get('id') || '').toUpperCase();
 let data = null;
+let clockNode = null;
 let tab = new URLSearchParams(location.search).get('tab') || 'standings';
 
 async function load() {
   try {
     data = await api('GET', `/api/tournaments/${id}`);
+    noteServerTime(data.serverNow);
     render();
   } catch (err) {
     $('#title').textContent = err.message;
@@ -44,6 +47,7 @@ async function load() {
 }
 
 function render() {
+  clockNode = null;
   $('#title').textContent = data.name;
   $('#meta').textContent =
     `${t('status_' + data.status)} · ${t('round')} ${data.currentRound}/${data.settings.rounds} · ${data.standings.length} ${t('playersWord')}`;
@@ -93,7 +97,7 @@ function renderStandings(host) {
       el('td', { class: 'num', text: String(r.rank) }),
       el('td', { text: r.name }),
       el('td', { class: 'num', text: String(r.points) }),
-      el('td', { class: 'num', text: recordText(r) }),
+      el('td', { class: 'num', text: recordText(r, data.settings) }),
       el('td', { class: 'num', text: pct(r.opWinPct) }),
       el('td', { class: 'num', text: pct(r.opOpWinPct) }),
       turni ? el('td', { class: 'num', text: String(r.woScore) }) : null,
@@ -107,7 +111,7 @@ function renderStandings(host) {
           el('th', { class: 'num', text: '#' }),
           el('th', { text: t('player') }),
           el('th', { class: 'num', text: t('points') }),
-          el('th', { class: 'num', text: 'W–L–D' }),
+          el('th', { class: 'num', text: recordHead(data.settings) }),
           el('th', { class: 'num', text: turni ? 'OMW%' : 'Op Win %' }),
           el('th', { class: 'num', text: turni ? 'AVOMW%' : 'Op Op Win %' }),
           turni ? el('th', { class: 'num', text: 'WOScore' }) : null,
@@ -115,7 +119,8 @@ function renderStandings(host) {
         el('tbody', {}, rows),
       ]),
     ]),
-    el('p', { class: 'helper', style: 'margin-top:.75rem', text: t('tiebreakNote') }),
+    el('p', { class: 'helper', style: 'margin-top:.75rem',
+      text: t(data.settings.tieMode === 'doubleLoss' ? 'tiebreakNoteDl' : 'tiebreakNote') }),
   ]));
 }
 
@@ -124,18 +129,31 @@ function renderRounds(host) {
     host.appendChild(el('p', { class: 'empty', text: t('noRounds') }));
     return;
   }
+  const tieWord = data.settings.tieMode === 'doubleLoss' ? t('doubleLoss') : t('draw');
   const rows = data.pairings.map((m) =>
     el('tr', {}, [
       el('td', { class: 'num', text: m.bye ? '—' : String(m.table) }),
       el('td', { class: m.result === 'p1' ? 'win' : '', text: m.p1 }),
       el('td', { class: m.result === 'p2' ? 'win' : '', text: m.bye ? 'bye' : m.p2 }),
       el('td', { text: m.status === 'confirmed'
-        ? (m.result === 'draw' ? t('draw') : '✓')
+        ? (m.result === 'draw' ? tieWord : '✓')
         : m.status === 'pending' ? '…' : '' }),
     ])
   );
+
+  if (data.settings.timerEnabled && data.timer) {
+    clockNode = el('div', { class: 'clock' });
+    paintClock(clockNode, data.timer);
+    host.appendChild(el('div', { class: 'clockbar' }, [
+      clockNode,
+      el('span', { class: 'helper', style: 'margin:0', text: t('roundTimer') }),
+    ]));
+  }
+
   host.appendChild(el('div', { class: 'panel' }, [
     el('h2', { text: `${t('round')} ${data.currentRound}` }),
+    el('p', { class: 'helper', style: 'margin-top:-.35rem',
+      text: data.roundLocked ? t('roundConfirmed') : t('roundOpen') }),
     el('div', { class: 'table-scroll' }, [
       el('table', {}, [
         el('thead', {}, [el('tr', {}, [
@@ -157,7 +175,7 @@ function renderPlayers(host) {
     .map((r) =>
       el('tr', { class: r.dropped ? 'dropped' : '' }, [
         el('td', { text: r.name }),
-        el('td', { class: 'num', text: recordText(r) }),
+        el('td', { class: 'num', text: recordText(r, data.settings) }),
       ])
     );
   host.appendChild(el('div', { class: 'panel' }, [
@@ -165,7 +183,7 @@ function renderPlayers(host) {
       el('table', {}, [
         el('thead', {}, [el('tr', {}, [
           el('th', { text: t('player') }),
-          el('th', { class: 'num', text: 'W–L–D' }),
+          el('th', { class: 'num', text: recordHead(data.settings) }),
         ])]),
         el('tbody', {}, rows),
       ]),
@@ -194,6 +212,10 @@ function renderTopCut(host) {
   }
   host.appendChild(el('div', { class: 'panel' }, [board]));
 }
+
+setInterval(() => {
+  if (clockNode && data) paintClock(clockNode, data.timer);
+}, 1000);
 
 document.documentElement.lang = LANG;
 applyStaticText();

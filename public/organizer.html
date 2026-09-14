@@ -12,7 +12,9 @@
   <div class="brand">Onic TCG <span>Organizer</span></div>
   <a href="/">Player view</a>
   <a href="#" id="screen-link" class="hidden">Big screen</a>
-  <button class="quiet" style="color:#cfdcf2" id="signout-btn" onclick="signOut()">Sign out</button>
+  <button class="theme-toggle" onclick="toggleTheme()" data-theme-toggle
+          data-label-dark="Dark mode" data-label-light="Light mode">Dark mode</button>
+  <button class="theme-toggle" id="signout-btn" onclick="signOut()">Sign out</button>
 </header>
 
 <main class="wrap-wide">
@@ -74,6 +76,22 @@
         <div class="field">
           <label><input type="checkbox" id="new-draws" checked style="width:auto;margin-right:.4rem">Allow draws</label>
         </div>
+        <div class="field">
+          <label for="new-tie">Ties count as</label>
+          <select id="new-tie">
+            <option value="draw" selected>Draw — 1 point each</option>
+            <option value="doubleLoss">Double loss — 0 points each</option>
+          </select>
+          <div class="helper">Double loss is how a timed-out table is scored at some events. It can be changed later, and changing it only rescores — it never rewrites what was reported.</div>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="new-timer" style="width:auto;margin-right:.4rem">Run a round timer</label>
+          <div class="helper">Off by default. When on, the clock starts as each round is paired and every screen counts down to the same moment.</div>
+        </div>
+        <div class="field" id="new-timer-mins-field" style="display:none">
+          <label for="new-timer-mins">Round length (minutes)</label>
+          <input id="new-timer-mins" type="number" min="1" max="180" value="50">
+        </div>
         <button class="wide" onclick="createTournament()">Create tournament</button>
       </section>
     </div>
@@ -105,12 +123,16 @@
 let auth = null;   // { id, token, name }
 let data = null;   // adminView payload
 let poll = null;
+let liveClocks = []; // rebuilt on every render; ticked once a second
 
 const gateNote = $('#gate-note');
 const createNote = $('#create-note');
 const consoleNote = $('#console-note');
 
 $('#gate-id').addEventListener('input', (e) => { e.target.value = e.target.value.toUpperCase(); });
+$('#new-timer').addEventListener('change', (e) => {
+  $('#new-timer-mins-field').style.display = e.target.checked ? '' : 'none';
+});
 
 // ------------------------------------------------------------ session ----
 
@@ -151,6 +173,9 @@ async function createTournament() {
     password: $('#new-pw').value,
     allowDraws: $('#new-draws').checked,
     tiebreakers: $('#new-tb').value,
+    tieMode: $('#new-tie').value,
+    timerEnabled: $('#new-timer').checked,
+    timerMinutes: Number($('#new-timer-mins').value),
   };
   try {
     const res = await api('POST', '/api/tournaments', body);
@@ -192,6 +217,7 @@ function showGate() {
 
 async function load() {
   data = await api('GET', `/api/tournaments/${auth.id}`, null, auth.token);
+  noteServerTime(data.serverNow);
   $('#gate').classList.add('hidden');
   $('#console').classList.remove('hidden');
   $('#signout-btn').classList.remove('hidden');
@@ -217,6 +243,7 @@ async function act(method, path, body) {
 // ------------------------------------------------------------- rendering --
 
 function render() {
+  liveClocks = [];
   renderHeader();
   renderPlayers();
   renderSettings();
@@ -324,11 +351,27 @@ function renderSettings() {
     el('option', { value: 'official', selected: data.settings.tiebreakers !== 'turni', text: 'Official handbook (25% floor)' }),
     el('option', { value: 'turni', selected: data.settings.tiebreakers === 'turni', text: 'Match turni.id (no floor, WOScore)' }),
   ]);
+  const doubleLoss = data.settings.tieMode === 'doubleLoss';
+  const tieSelect = el('select', {}, [
+    el('option', { value: 'draw', selected: !doubleLoss, text: 'Draw — 1 point each' }),
+    el('option', { value: 'doubleLoss', selected: doubleLoss, text: 'Double loss — 0 points each' }),
+  ]);
+  const timerBox = el('input', { type: 'checkbox', checked: data.settings.timerEnabled, style: 'width:auto;margin-right:.4rem' });
+  const minsInput = el('input', { type: 'number', min: '1', max: '180', value: String(data.settings.timerMinutes || 50) });
 
   host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Swiss rounds' }), roundsInput]));
   host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Top cut' }), cutSelect]));
   host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Tiebreakers' }), tbSelect]));
   host.appendChild(el('div', { class: 'field' }, [el('label', {}, [drawsBox, 'Allow draws'])]));
+  host.appendChild(el('div', { class: 'field' }, [
+    el('label', { text: 'Ties count as' }), tieSelect,
+    el('div', { class: 'helper', text: 'Changing this rescores results already reported; it never rewrites them.' }),
+  ]));
+  host.appendChild(el('div', { class: 'field' }, [
+    el('label', {}, [timerBox, 'Run a round timer']),
+    el('div', { class: 'helper', text: 'The clock starts when a round is paired. Every screen counts down to the same moment.' }),
+  ]));
+  host.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Round length (minutes)' }), minsInput]));
   host.appendChild(el('div', { class: 'field' }, [
     el('label', {}, [openBox, 'Players may report their own results']),
     el('div', { class: 'helper', text: 'Turn this off to enter every result yourself.' }),
@@ -342,8 +385,68 @@ function renderSettings() {
       allowDraws: drawsBox.checked,
       tiebreakers: tbSelect.value,
       openReporting: openBox.checked,
+      tieMode: tieSelect.value,
+      timerEnabled: timerBox.checked,
+      timerMinutes: Number(minsInput.value),
     }).then(() => showNote(consoleNote, 'Settings saved.', 'good')),
   }));
+}
+
+// ---------------------------------------------------------- round clock --
+
+/*
+ * One bar, rebuilt whenever the round is rendered and repainted once a second
+ * from the round's absolute end time. The server is never asked what time it
+ * is; it already said when the round ends.
+ */
+function clockBar(timer) {
+  const node = el('div', { class: 'clock' });
+  paintClock(node, timer);
+  liveClocks.push({ node, timer });
+
+  const act2 = (action, minutes) => act('POST', '/rounds/timer', { action, minutes });
+  return el('div', { class: 'clockbar' }, [
+    node,
+    el('div', { class: 'btn-row' }, [
+      timer && timer.running
+        ? el('button', { class: 'secondary', text: 'Pause', onClick: () => act2('pause') })
+        : el('button', { class: 'secondary', text: 'Start', onClick: () => act2('start') }),
+      el('button', { class: 'quiet', text: '+5 min', onClick: () => act2('extend', 5) }),
+      el('button', { class: 'quiet', text: 'Reset', onClick: () => act2('reset') }),
+    ]),
+  ]);
+}
+
+/*
+ * The gate. Confirming every match says each table agrees. Locking the round
+ * says the organizer has looked at the round as a whole — and nothing is drawn,
+ * cut or advanced until they have.
+ */
+function gateBar(round, opts) {
+  const open = round.matches.filter((m) => m.status !== 'confirmed').length;
+  const options = opts || {};
+
+  if (round.locked) {
+    return el('div', { class: 'gate done' }, [
+      el('div', { class: 'gate-text' }, [
+        el('strong', { text: `Round ${round.number} confirmed` }),
+        el('span', { text: options.doneHint || 'You can pair the next round.' }),
+      ]),
+      el('button', { class: 'secondary', text: 'Reopen round',
+        onClick: () => act('POST', '/rounds/unlock', {}) }),
+    ]);
+  }
+
+  return el('div', { class: 'gate' }, [
+    el('div', { class: 'gate-text' }, [
+      el('strong', { text: `Round ${round.number} is not confirmed` }),
+      el('span', { text: open > 0
+        ? `${open} result(s) still to settle.`
+        : 'Every result is in. Check the round, then confirm it.' }),
+    ]),
+    el('button', { text: 'Confirm round', disabled: open > 0,
+      onClick: () => act('POST', '/rounds/lock', {}) }),
+  ]);
 }
 
 function renderRound() {
@@ -374,15 +477,23 @@ function renderRound() {
     host.appendChild(el('div', { class: 'note warn', text: 'This round contains at least one rematch — no rematch-free pairing was possible.' }));
   }
 
+  if (data.settings.timerEnabled && round.timer) host.appendChild(clockBar(round.timer));
+
   const pending = round.matches.filter((m) => m.status === 'pending').length;
   const open = round.matches.filter((m) => m.status === 'open').length;
 
   host.appendChild(el('p', { class: 'helper' , text:
     `${round.matches.length} matches · ${pending} awaiting your confirmation · ${open} not yet reported` }));
+  const tieWord = data.settings.tieMode === 'doubleLoss' ? 'a double loss' : 'a draw';
   host.appendChild(el('p', { class: 'helper', style: 'margin-bottom:.75rem', text:
     data.settings.allowDraws
-      ? 'Press ◀ if the left player won, ▶ if the right player won, = for a draw. ↺ undoes a confirmed result.'
+      ? `Press ◀ if the left player won, ▶ if the right player won, = for ${tieWord}. ↺ undoes a confirmed result.`
       : 'Press ◀ if the left player won, ▶ if the right player won. ↺ undoes a confirmed result.' }));
+
+  if (round.locked) {
+    host.appendChild(el('div', { class: 'note', text:
+      'This round is confirmed, so its results are read-only. Reopen it below to change anything.' }));
+  }
 
   const list = el('div', {});
   for (const m of round.matches) {
@@ -409,11 +520,14 @@ function renderRound() {
           ? el('div', { class: 'meta', text: `${m.reportedBy || 'Player'} reported ${isDraw ? 'a draw' : (p1Won ? m.p1 : m.p2) + ' won'}` })
           : null,
       ]),
-      el('div', { class: 'controls' }, [
+      el('div', { class: 'controls' }, round.locked ? [
+        // A confirmed round reads back as text. Reopening it is the way in.
+        el('span', { class: 'tag confirmed', text: isDraw ? tieWord : (p1Won ? m.p1 : m.p2) }),
+      ] : [
         el('button', { class: 'secondary', title: `${m.p1} wins`, text: '◀',
           onClick: () => act('POST', '/result', { matchId: m.id, result: 'p1' }) }),
         data.settings.allowDraws
-          ? el('button', { class: 'secondary', title: 'Draw', text: '=',
+          ? el('button', { class: 'secondary', title: tieWord, text: '=',
               onClick: () => act('POST', '/result', { matchId: m.id, result: 'draw' }) })
           : null,
         el('button', { class: 'secondary', title: `${m.p2} wins`, text: '▶',
@@ -427,20 +541,30 @@ function renderRound() {
   }
   host.appendChild(list);
 
+  host.appendChild(gateBar(round, {
+    doneHint: data.settings.topCut > 0
+      ? 'You can pair the next round or start the cut.'
+      : 'You can pair the next round.',
+  }));
+
   host.appendChild(el('div', { class: 'btn-row', style: 'margin-top:1rem' }, [
-    pending > 0
+    pending > 0 && !round.locked
       ? el('button', { text: `Confirm ${pending} reported result(s)`, onClick: () => act('POST', '/confirm-all', {}) })
       : null,
     el('button', {
       class: 'secondary',
       text: 'Pair next round',
+      disabled: !round.locked,
+      title: round.locked ? '' : `Confirm round ${round.number} first`,
       onClick: () => act('POST', '/pair', {}),
     }),
-    round.matches.every((m) => m.status !== 'confirmed' || m.bye)
+    !round.locked && round.matches.every((m) => m.status !== 'confirmed' || m.bye)
       ? el('button', { class: 'quiet', text: 'Re-pair this round', onClick: () => act('POST', '/repair', {}) })
       : null,
     data.settings.topCut > 0
       ? el('button', { class: 'secondary', text: `Start top ${data.settings.topCut}`,
+          disabled: !round.locked,
+          title: round.locked ? '' : `Confirm round ${round.number} first`,
           onClick: () => act('POST', '/cut', { size: data.settings.topCut }) })
       : null,
   ]));
@@ -454,21 +578,31 @@ function renderCut() {
 
   host.appendChild(el('h2', { text: `Top ${data.cut.size}` }));
 
+  const live = data.cut.rounds[data.cut.rounds.length - 1];
+  const sealed = !!(data.cutRound && data.cutRound.locked);
+  if (data.settings.timerEnabled && data.timer && data.status === 'cut') {
+    host.appendChild(clockBar(data.timer));
+  }
+
   const board = el('div', { class: 'bracket' });
   for (const round of data.cut.rounds) {
     const col = el('div', { class: 'bracket-round' });
     const remaining = data.cut.size / Math.pow(2, round.number - 1);
     col.appendChild(el('h4', { text: remaining === 2 ? 'Final' : remaining === 4 ? 'Semi-finals' : `Round of ${remaining}` }));
+    // Only the live bracket round is editable, and only while it is open.
+    const editable = round === live && !sealed && data.status === 'cut';
     for (const m of round.matches) {
       col.appendChild(el('div', { class: 'bracket-match' }, [
         el('div', { class: m.result === 'p1' ? 'win' : '' }, [m.p1]),
         el('div', { class: m.result === 'p2' ? 'win' : '' }, [m.p2]),
-        el('div', { class: 'btn-row', style: 'margin-top:.35rem' }, [
-          el('button', { class: 'quiet', text: `${m.p1} won`,
-            onClick: () => act('POST', '/result', { matchId: m.id, result: 'p1' }) }),
-          el('button', { class: 'quiet', text: `${m.p2} won`,
-            onClick: () => act('POST', '/result', { matchId: m.id, result: 'p2' }) }),
-        ]),
+        editable
+          ? el('div', { class: 'btn-row', style: 'margin-top:.35rem' }, [
+              el('button', { class: 'quiet', text: `${m.p1} won`,
+                onClick: () => act('POST', '/result', { matchId: m.id, result: 'p1' }) }),
+              el('button', { class: 'quiet', text: `${m.p2} won`,
+                onClick: () => act('POST', '/result', { matchId: m.id, result: 'p2' }) }),
+            ])
+          : null,
       ]));
     }
     board.appendChild(col);
@@ -476,10 +610,14 @@ function renderCut() {
   host.appendChild(board);
 
   if (data.status !== 'done') {
+    // The gate applies to the bracket exactly as it does to a Swiss round.
+    host.appendChild(gateBar(live, { doneHint: 'You can advance the bracket.' }));
     host.appendChild(el('button', {
       class: 'secondary',
       style: 'margin-top:1rem',
       text: 'Advance bracket',
+      disabled: !sealed,
+      title: sealed ? '' : `Confirm bracket round ${live.number} first`,
       onClick: () => act('POST', '/cut/advance', {}),
     }));
   } else {
@@ -503,7 +641,7 @@ function renderStandings() {
       el('td', { text: r.name }),
       el('td', { class: 'helper', text: r.ptcgId || '—' }),
       el('td', { class: 'num', text: String(r.points) }),
-      el('td', { class: 'num', text: recordText(r) }),
+      el('td', { class: 'num', text: recordText(r, data.settings) }),
       el('td', { class: 'num', text: pct(r.opWinPct) }),
       el('td', { class: 'num', text: pct(r.opOpWinPct) }),
       data.settings.tiebreakers === 'turni' ? el('td', { class: 'num', text: String(r.woScore) }) : null,
@@ -517,7 +655,7 @@ function renderStandings() {
         el('th', { text: 'Player' }),
         el('th', { text: 'PTCG ID' }),
         el('th', { class: 'num', text: 'Pts' }),
-        el('th', { class: 'num', text: 'W–L–D' }),
+        el('th', { class: 'num', text: recordHead(data.settings) }),
         el('th', { class: 'num', text: 'Op Win %' }),
         el('th', { class: 'num', text: 'Op Op Win %' }),
         data.settings.tiebreakers === 'turni' ? el('th', { class: 'num', text: 'WOScore' }) : null,
@@ -526,6 +664,13 @@ function renderStandings() {
     ]),
   ]));
 }
+
+// The clock is repainted locally rather than re-fetched: the poll runs every
+// twelve seconds and a countdown that jumped in twelve-second steps would be
+// useless at a table.
+setInterval(() => {
+  for (const entry of liveClocks) paintClock(entry.node, entry.timer);
+}, 1000);
 
 // ------------------------------------------------------------- utilities --
 

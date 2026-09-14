@@ -64,6 +64,7 @@ const STRINGS = {
     result: 'Hasil',
     downloadCsv: 'Unduh CSV',
     tiebreakNote: 'Menang = 3 poin · Seri = 1 poin · Kalah = 0 poin',
+    tiebreakNoteDl: 'Menang = 3 poin · Kalah ganda = 0 poin untuk keduanya · Kalah = 0 poin',
     noRounds: 'Belum ada ronde.',
     noTopCut: 'Belum ada top cut.',
     scanToCheckIn: 'Pindai untuk cek meja kamu',
@@ -72,6 +73,17 @@ const STRINGS = {
     codeMissing: 'Masukkan kode kamu dulu.',
     topCutLabel: 'Top Cut',
     cutRound: 'Babak',
+    doubleLoss: 'Kalah ganda',
+    tieHandling: 'Hasil seri',
+    tieAsDraw: 'Seri — 1 poin untuk keduanya',
+    tieAsDoubleLoss: 'Kalah ganda — 0 poin untuk keduanya',
+    roundTimer: 'Timer ronde',
+    timerPaused: 'dijeda',
+    timeUp: 'Waktu habis',
+    roundConfirmed: 'Ronde dikonfirmasi',
+    roundOpen: 'Ronde belum dikonfirmasi',
+    themeLight: 'Mode terang',
+    themeDark: 'Mode gelap',
   },
   en: {
     brand: 'Tournament',
@@ -136,6 +148,7 @@ const STRINGS = {
     result: 'Result',
     downloadCsv: 'Download CSV',
     tiebreakNote: 'Win = 3 pts · Draw = 1 pt · Loss = 0 pts',
+    tiebreakNoteDl: 'Win = 3 pts · Double loss = 0 pts for both · Loss = 0 pts',
     noRounds: 'No rounds yet.',
     noTopCut: 'No top cut yet.',
     scanToCheckIn: 'Scan to find your table',
@@ -144,6 +157,17 @@ const STRINGS = {
     codeMissing: 'Enter your code first.',
     topCutLabel: 'Top Cut',
     cutRound: 'Round',
+    doubleLoss: 'Double loss',
+    tieHandling: 'Ties',
+    tieAsDraw: 'Draw — 1 point each',
+    tieAsDoubleLoss: 'Double loss — 0 points each',
+    roundTimer: 'Round timer',
+    timerPaused: 'paused',
+    timeUp: 'Time',
+    roundConfirmed: 'Round confirmed',
+    roundOpen: 'Round not confirmed yet',
+    themeLight: 'Light mode',
+    themeDark: 'Dark mode',
   },
 };
 
@@ -159,6 +183,7 @@ function setLang(lang) {
   document.documentElement.lang = lang;
   if (typeof render === 'function') render();
   applyStaticText();
+  applyTheme(); // the switch's own label is translated too
 }
 
 function toggleLang() {
@@ -172,6 +197,95 @@ function applyStaticText() {
   document.querySelectorAll('[data-t-ph]').forEach((el) => {
     el.placeholder = t(el.dataset.tPh);
   });
+}
+
+// ------------------------------------------------------------------ theme ---
+
+/*
+ * Three states, matching the CSS: 'light', 'dark', or nothing stored, which
+ * means follow the device. Only an explicit choice stamps data-theme, so a
+ * reader who has never touched the switch keeps tracking their system setting
+ * even if it changes while the page is open.
+ */
+function storedTheme() {
+  try {
+    const v = localStorage.getItem('onic-theme');
+    return v === 'light' || v === 'dark' ? v : null;
+  } catch {
+    return null; // private windows and blocked site data both land here
+  }
+}
+
+function currentTheme() {
+  const stored = storedTheme();
+  if (stored) return stored;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyTheme() {
+  const stored = storedTheme();
+  if (stored) document.documentElement.setAttribute('data-theme', stored);
+  else document.documentElement.removeAttribute('data-theme');
+  const dark = currentTheme() === 'dark';
+  document.querySelectorAll('[data-theme-toggle]').forEach((node) => {
+    // A page with no language switch of its own (the organizer console) carries
+    // its own labels rather than following the player-facing language.
+    const own = dark ? node.dataset.labelLight : node.dataset.labelDark;
+    node.textContent = own || (dark ? t('themeLight') : t('themeDark'));
+  });
+}
+
+function toggleTheme() {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  try {
+    localStorage.setItem('onic-theme', next);
+  } catch { /* the choice just does not persist */ }
+  applyTheme();
+}
+
+applyTheme();
+
+// ------------------------------------------------------------------ clock ---
+
+/*
+ * The server sends the instant a round ends, plus its own clock. Taking the
+ * difference between the two once, at load, means a device whose clock is
+ * minutes out still shows the same countdown as everyone else in the room.
+ */
+let CLOCK_SKEW_MS = 0;
+
+function noteServerTime(serverNow) {
+  if (!serverNow) return;
+  const skew = new Date(serverNow).getTime() - Date.now();
+  if (Number.isFinite(skew)) CLOCK_SKEW_MS = skew;
+}
+
+/** Milliseconds left on a timer payload, or null if the event has no clock. */
+function timerLeft(timer) {
+  if (!timer) return null;
+  if (!timer.running) return Math.max(0, timer.leftMs || 0);
+  if (!timer.endsAt) return null;
+  return Math.max(0, new Date(timer.endsAt).getTime() - (Date.now() + CLOCK_SKEW_MS));
+}
+
+function clockText(ms) {
+  if (ms === null || ms === undefined) return '—';
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+}
+
+/** Paint one clock node from a timer payload. Safe to call every second. */
+function paintClock(node, timer) {
+  const ms = timerLeft(timer);
+  node.textContent = ms === 0 ? t('timeUp') : clockText(ms);
+  node.className = 'clock' +
+    (!timer || !timer.running ? ' paused' : '') +
+    (ms !== null && ms === 0 ? ' over' : ms !== null && ms <= 5 * 60000 ? ' low' : '');
+  node.title = timer && !timer.running ? t('timerPaused') : '';
 }
 
 // ------------------------------------------------------------------ utils ---
@@ -221,10 +335,19 @@ function pct(value) {
   return value === null || value === undefined ? '—' : (value * 100).toFixed(2) + '%';
 }
 
-function recordText(row) {
+/*
+ * W–L–D, or plain W–L when the event scores ties as a double loss — there are
+ * no draws to show in that mode, and an empty third column reads as a bug.
+ */
+function recordText(row, settings) {
+  if (settings && settings.tieMode === 'doubleLoss') return `${row.wins}–${row.losses}`;
   const parts = [row.wins, row.losses];
   if (row.draws) parts.push(row.draws);
   return parts.join('–');
+}
+
+function recordHead(settings) {
+  return settings && settings.tieMode === 'doubleLoss' ? 'W–L' : 'W–L–D';
 }
 
 function showNote(node, message, kind) {

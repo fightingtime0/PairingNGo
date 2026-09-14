@@ -34,6 +34,13 @@ function makeCode(length) {
   return out;
 }
 
+/** Round length in minutes. Out-of-range or missing falls back to 50. */
+function clampMinutes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 50;
+  return Math.max(1, Math.min(180, Math.round(n)));
+}
+
 function tournamentPath(id) {
   if (!/^[A-Z0-9]{4,10}$/.test(id)) throw new Error('Bad tournament id');
   return path.join(DATA_DIR, `${id}.json`);
@@ -51,14 +58,111 @@ async function saveTournament(t) {
   await fsp.rename(temp, target);
 }
 
+/**
+ * Bring a stored tournament up to the current shape.
+ *
+ * Files written before the round lock and the round timer existed are still
+ * perfectly good events; they just have no opinion about either. A round that
+ * something was already drawn past was plainly finished, so it is sealed rather
+ * than re-asked. This runs on every read and mutates in place, so a file only
+ * gains the new fields the next time it is written.
+ */
+function migrateTournament(t) {
+  if (!t || typeof t !== 'object') return t;
+
+  t.settings = t.settings || {};
+  if (t.settings.tieMode !== 'doubleLoss') t.settings.tieMode = 'draw';
+  t.settings.timerEnabled = !!t.settings.timerEnabled;
+  const mins = Number(t.settings.timerMinutes);
+  t.settings.timerMinutes = Number.isFinite(mins) && mins >= 1 && mins <= 180 ? Math.round(mins) : 50;
+
+  const seal = (rounds, finishedStage) => {
+    if (!Array.isArray(rounds)) return;
+    rounds.forEach((rd, i) => {
+      if (rd.timer === undefined) rd.timer = null;
+      if (rd.lockedAt === undefined) rd.lockedAt = null;
+      if (rd.locked != null) return;
+      const allConfirmed = rd.matches.every((m) => m.status === 'confirmed');
+      rd.locked = i < rounds.length - 1 || (allConfirmed && finishedStage);
+      if (rd.locked) rd.lockedAt = rd.lockedAt || rd.startedAt || null;
+    });
+  };
+
+  seal(t.rounds, t.status === 'cut' || t.status === 'done');
+  if (t.cut) seal(t.cut.rounds, t.status === 'done');
+  return t;
+}
+
 async function loadTournament(id) {
   try {
     const raw = await fsp.readFile(tournamentPath(id), 'utf8');
-    return JSON.parse(raw);
+    return migrateTournament(JSON.parse(raw));
   } catch (err) {
     if (err.code === 'ENOENT') return null;
     throw err;
   }
+}
+
+// ------------------------------------------------------------------ timer ---
+
+/*
+ * A round clock is stored as an ABSOLUTE end time, never as a countdown the
+ * server ticks down. Every client subtracts that instant from its own clock, so
+ * the organizer's laptop, the venue screen and thirty phones all show the same
+ * number without the server writing once a second. A paused clock keeps the
+ * milliseconds left instead; `serverNow` in every payload lets a client correct
+ * for its own clock being wrong.
+ */
+function newTimer(t) {
+  const ms = Math.max(1, t.settings.timerMinutes || 50) * 60000;
+  return { minutes: t.settings.timerMinutes || 50, endsAt: null, leftMs: ms, running: false };
+}
+
+function timerLeftMs(timer) {
+  if (!timer) return null;
+  if (!timer.running) return Math.max(0, timer.leftMs || 0);
+  return Math.max(0, new Date(timer.endsAt).getTime() - Date.now());
+}
+
+function timerAction(round, action, minutes) {
+  if (!round.timer) throw new Error('This round has no timer.');
+  const timer = round.timer;
+  switch (action) {
+    case 'start': {
+      if (timer.running) break;
+      const left = Math.max(0, timer.leftMs || 0) || Math.max(1, timer.minutes || 50) * 60000;
+      timer.endsAt = new Date(Date.now() + left).toISOString();
+      timer.leftMs = null;
+      timer.running = true;
+      break;
+    }
+    case 'pause':
+      if (!timer.running) break;
+      timer.leftMs = timerLeftMs(timer);
+      timer.endsAt = null;
+      timer.running = false;
+      break;
+    case 'reset':
+      timer.leftMs = Math.max(1, timer.minutes || 50) * 60000;
+      timer.endsAt = null;
+      timer.running = false;
+      break;
+    case 'extend': {
+      const add = Math.max(1, Math.min(60, Number(minutes) || 5)) * 60000;
+      if (timer.running) timer.endsAt = new Date(new Date(timer.endsAt).getTime() + add).toISOString();
+      else timer.leftMs = Math.max(0, timer.leftMs || 0) + add;
+      break;
+    }
+    default:
+      throw new Error('Timer action must be start, pause, reset or extend.');
+  }
+  return timer;
+}
+
+/** The round the organizer is acting on: bracket round during a cut, else Swiss. */
+function activeRound(t) {
+  const pool = t.cut && t.status === 'cut' ? t.cut.rounds : t.rounds;
+  return pool[pool.length - 1] || null;
 }
 
 async function listTournaments() {
@@ -208,6 +312,17 @@ function findPlayer(t, name, code) {
 
 // ------------------------------------------------------------------ views ---
 
+/** The clock as a client needs it: an instant to count to, or a frozen figure. */
+function publicTimer(round) {
+  if (!round || !round.timer) return null;
+  return {
+    running: !!round.timer.running,
+    endsAt: round.timer.endsAt || null,
+    leftMs: timerLeftMs(round.timer),
+    minutes: round.timer.minutes || null,
+  };
+}
+
 /** Everything a player or spectator may see. No player codes leave this. */
 function publicView(t) {
   const standings = swiss.computeStandings(t);
@@ -236,8 +351,16 @@ function publicView(t) {
       topCut: t.settings.topCut,
       tiebreakers: t.settings.tiebreakers || 'official',
       openReporting: t.settings.openReporting !== false,
+      tieMode: swiss.tieModeOf(t),
+      timerEnabled: !!t.settings.timerEnabled,
+      timerMinutes: t.settings.timerMinutes || 50,
     },
     currentRound: round ? round.number : 0,
+    roundLocked: round ? !!round.locked : false,
+    // Everyone watching counts down to the same instant, corrected against
+    // serverNow below rather than against whatever the device's clock says.
+    timer: publicTimer(activeRound(t)),
+    serverNow: new Date().toISOString(),
     pairings,
     // PTCG IDs are real-world player identifiers and never appear in a public
     // response. The organizer view adds them back.
@@ -283,8 +406,11 @@ function adminView(t) {
 
   const ptcgOf = new Map(t.players.map((p) => [p.id, p.ptcgId || null]));
 
+  const cutRound = t.cut ? t.cut.rounds[t.cut.rounds.length - 1] : null;
+
   return {
     ...base,
+    cutRound: cutRound ? { number: cutRound.number, locked: !!cutRound.locked } : null,
     standings: base.standings.map((r) => ({ ...r, ptcgId: ptcgOf.get(r.id) || null })),
     players: t.players.map((p) => ({
       id: p.id,
@@ -298,6 +424,8 @@ function adminView(t) {
       ? {
           number: round.number,
           hadRematch: !!round.hadRematch,
+          locked: !!round.locked,
+          timer: publicTimer(round),
           matches: round.matches.map((m) => ({
             id: m.id,
             table: m.table,
@@ -369,6 +497,9 @@ route('POST', /^\/api\/tournaments$/, async (req, res, body) => {
       language: body.language === 'en' ? 'en' : 'id',
       tiebreakers: body.tiebreakers === 'turni' ? 'turni' : 'official',
       openReporting: body.openReporting !== false,
+      tieMode: body.tieMode === 'doubleLoss' ? 'doubleLoss' : 'draw',
+      timerEnabled: body.timerEnabled === true,
+      timerMinutes: clampMinutes(body.timerMinutes),
     },
     passwordSalt: salt,
     passwordHash: await hashSecret(password, salt),
@@ -442,12 +573,18 @@ route('GET', /^\/api\/tournaments\/([A-Z0-9]+)\/player\/([a-z0-9]+)$/, async (re
 
   send(res, 200, {
     player: { id: player.id, name: player.name, dropped: !!player.dropped },
+    // The player's phone counts down to the same instant as the venue screen,
+    // corrected against serverNow rather than against the phone's own clock.
+    timer: publicTimer(round),
+    serverNow: new Date().toISOString(),
     tournament: {
       id: t.id,
       name: t.name,
       status: t.status,
       allowDraws: t.settings.allowDraws,
       openReporting: t.settings.openReporting !== false,
+      tieMode: swiss.tieModeOf(t),
+      timerEnabled: !!t.settings.timerEnabled,
     },
     record: row
       ? {
@@ -685,6 +822,18 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/settings$/, (req, res, body, [i
       t.settings.tiebreakers = body.tiebreakers;
     }
     if (body.openReporting !== undefined) t.settings.openReporting = !!body.openReporting;
+    if (body.tieMode !== undefined) {
+      if (!['draw', 'doubleLoss'].includes(body.tieMode)) throw new Error('Tie handling must be draw or doubleLoss.');
+      t.settings.tieMode = body.tieMode;
+    }
+    if (body.timerMinutes !== undefined) t.settings.timerMinutes = clampMinutes(body.timerMinutes);
+    if (body.timerEnabled !== undefined) {
+      t.settings.timerEnabled = !!body.timerEnabled;
+      // Turning the clock off mid-event clears the running round's clock too,
+      // otherwise the venue screen keeps counting down to nothing.
+      const round = activeRound(t);
+      if (round) round.timer = t.settings.timerEnabled ? round.timer || newTimer(t) : null;
+    }
     await saveTournament(t);
     send(res, 200, { ok: true, settings: t.settings });
   })
@@ -698,12 +847,22 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/pair$/, (req, res, body, [id], 
       if (open.length > 0 && !body.force) {
         throw new Error(`${open.length} result(s) in round ${last.number} are not confirmed yet.`);
       }
+      // The gate: confirming every match is not the same as signing the round
+      // off. Nothing is drawn from a round the organizer has not closed.
+      if (!last.locked && !body.force) {
+        throw new Error(`Confirm round ${last.number} before pairing the next one.`);
+      }
     }
     if (t.rounds.length >= t.settings.rounds && !body.force) {
       throw new Error(`All ${t.settings.rounds} rounds are done. Raise the round count or start the top cut.`);
     }
 
     const round = swiss.pairNextRound(t);
+    if (t.settings.timerEnabled) {
+      // Pairing a round is the moment it starts at a venue, so the clock runs.
+      round.timer = newTimer(t);
+      timerAction(round, 'start');
+    }
     t.rounds.push(round);
     t.status = 'swiss';
     await saveTournament(t);
@@ -715,11 +874,14 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/repair$/, (req, res, body, [id]
   adminAction(id, headers, res, async (t) => {
     const last = t.rounds[t.rounds.length - 1];
     if (!last) throw new Error('No round to re-pair.');
+    if (last.locked) throw new Error(`Round ${last.number} is confirmed. Reopen it before re-pairing.`);
     if (last.matches.some((m) => m.status === 'confirmed' && !m.bye)) {
       throw new Error('Results have already been confirmed in this round.');
     }
+    const keepTimer = last.timer;
     t.rounds.pop();
     const round = swiss.pairNextRound(t);
+    round.timer = keepTimer; // re-pairing reshuffles tables, not the clock
     t.rounds.push(round);
     await saveTournament(t);
     send(res, 200, { ok: true, round: round.number, hadRematch: round.hadRematch });
@@ -728,9 +890,11 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/repair$/, (req, res, body, [id]
 
 route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/result$/, (req, res, body, [id], q, headers) =>
   adminAction(id, headers, res, async (t) => {
-    const pool = t.cut && t.status === 'cut' ? t.cut.rounds : t.rounds;
-    const round = pool[pool.length - 1];
+    const round = activeRound(t);
     if (!round) throw new Error('No active round.');
+    if (round.locked && !body.force) {
+      throw new Error(`Round ${round.number} is confirmed. Reopen it before changing a result.`);
+    }
     const match = round.matches.find((m) => m.id === body.matchId);
     if (!match) throw new Error('Match not found in the current round.');
     if (match.bye) throw new Error('A bye cannot be edited.');
@@ -750,9 +914,9 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/result$/, (req, res, body, [id]
 
 route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/confirm-all$/, (req, res, body, [id], q, headers) =>
   adminAction(id, headers, res, async (t) => {
-    const pool = t.cut && t.status === 'cut' ? t.cut.rounds : t.rounds;
-    const round = pool[pool.length - 1];
+    const round = activeRound(t);
     if (!round) throw new Error('No active round.');
+    if (round.locked) throw new Error(`Round ${round.number} is already confirmed.`);
     let count = 0;
     for (const m of round.matches) {
       if (m.status === 'pending' && m.result) {
@@ -768,12 +932,15 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/confirm-all$/, (req, res, body,
 
 route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/reopen$/, (req, res, body, [id], q, headers) =>
   adminAction(id, headers, res, async (t) => {
-    const pool = t.cut && t.status === 'cut' ? t.cut.rounds : t.rounds;
-    const round = pool[pool.length - 1];
+    const round = activeRound(t);
     if (!round) throw new Error('No active round.');
     const match = round.matches.find((m) => m.id === body.matchId);
     if (!match) throw new Error('Match not found.');
     if (match.bye) throw new Error('A bye cannot be reopened.');
+    // Reopening a match necessarily reopens the round it sits in: the round is
+    // no longer the thing the organizer signed off.
+    round.locked = false;
+    round.lockedAt = null;
     match.status = 'open';
     match.result = null;
     match.reportedBy = null;
@@ -791,7 +958,15 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/cut$/, (req, res, body, [id], q
     if (last && last.matches.some((m) => m.status !== 'confirmed')) {
       throw new Error('Confirm every Swiss result before cutting.');
     }
+    if (last && !last.locked && !body.force) {
+      throw new Error(`Confirm round ${last.number} before starting the cut.`);
+    }
     t.cut = swiss.buildCut(t, size);
+    if (t.settings.timerEnabled) {
+      const first = t.cut.rounds[0];
+      first.timer = newTimer(t);
+      timerAction(first, 'start');
+    }
     t.settings.topCut = size;
     t.status = 'cut';
     await saveTournament(t);
@@ -802,14 +977,68 @@ route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/cut$/, (req, res, body, [id], q
 route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/cut\/advance$/, (req, res, body, [id], q, headers) =>
   adminAction(id, headers, res, async (t) => {
     if (!t.cut) throw new Error('No top cut has been started.');
-    const round = swiss.advanceCut(t.cut);
+    const round = swiss.advanceCut(t.cut, { force: !!body.force });
     if (!round) {
       t.status = 'done';
       await saveTournament(t);
       return send(res, 200, { ok: true, finished: true });
     }
+    if (t.settings.timerEnabled) {
+      round.timer = newTimer(t);
+      timerAction(round, 'start');
+    }
     await saveTournament(t);
     send(res, 200, { ok: true, round: round.number });
+  })
+);
+
+/*
+ * The round gate.
+ *
+ * Confirming every match says each table agrees on its own result. Locking the
+ * round says the organizer has looked at the whole round and is happy for the
+ * event to move past it — which is the step turni.id's event #277 never had.
+ * Nothing draws, cuts or advances off an unlocked round.
+ */
+route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/rounds\/lock$/, (req, res, body, [id], q, headers) =>
+  adminAction(id, headers, res, async (t) => {
+    const round = activeRound(t);
+    if (!round) throw new Error('No active round.');
+    if (round.locked) throw new Error(`Round ${round.number} is already confirmed.`);
+    const open = round.matches.filter((m) => m.status !== 'confirmed');
+    if (open.length > 0) {
+      throw new Error(`${open.length} result(s) in round ${round.number} are not confirmed yet.`);
+    }
+    round.locked = true;
+    round.lockedAt = new Date().toISOString();
+    // The round is closed, so the clock stops with it.
+    if (round.timer && round.timer.running) timerAction(round, 'pause');
+    await saveTournament(t);
+    send(res, 200, { ok: true, round: round.number, locked: true });
+  })
+);
+
+route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/rounds\/unlock$/, (req, res, body, [id], q, headers) =>
+  adminAction(id, headers, res, async (t) => {
+    const round = activeRound(t);
+    if (!round) throw new Error('No active round.');
+    if (!round.locked) throw new Error(`Round ${round.number} is already open.`);
+    round.locked = false;
+    round.lockedAt = null;
+    await saveTournament(t);
+    send(res, 200, { ok: true, round: round.number, locked: false });
+  })
+);
+
+route('POST', /^\/api\/tournaments\/([A-Z0-9]+)\/rounds\/timer$/, (req, res, body, [id], q, headers) =>
+  adminAction(id, headers, res, async (t) => {
+    const round = activeRound(t);
+    if (!round) throw new Error('No active round.');
+    if (!t.settings.timerEnabled) throw new Error('The round timer is switched off for this event.');
+    if (!round.timer) round.timer = newTimer(t);
+    timerAction(round, String(body.action || ''), body.minutes);
+    await saveTournament(t);
+    send(res, 200, { ok: true, timer: publicTimer(round) });
   })
 );
 

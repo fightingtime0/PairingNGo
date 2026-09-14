@@ -1,25 +1,142 @@
+/*
+ * Two palettes, one set of names.
+ *
+ * Every colour in this file is a token, so a theme is nothing but a second
+ * block of values. Light is the default and is unchanged from the navy
+ * original. Dark is Nightshade — belladonna berry and dried calyx on
+ * violet-black — lifted from the single-file build.
+ *
+ * The theme follows the device unless the reader picks one, in which case
+ * app.js stamps data-theme on <html> and that wins in both directions.
+ */
 :root {
-  --ink: #14213d;
+  color-scheme: light;
+
+  --ink: #14213d;          /* primary text */
   --ink-soft: #4a5568;
   --ink-faint: #8c96a5;
-  --paper: #eef1f5;
-  --surface: #ffffff;
+  --paper: #eef1f5;        /* page ground */
+  --surface: #ffffff;      /* panels */
+  --surface-2: #f3f5f9;    /* fields, secondary buttons, hovers */
+  --surface-3: #eceff4;    /* pressed / quiet-button hover */
   --rule: #d5dbe4;
   --rule-strong: #b3bcca;
+
+  --accent: #14213d;       /* primary action */
+  --accent-hi: #1d2f57;    /* its hover */
+  --on-accent: #ffffff;    /* text on a primary button */
+
+  --chrome: #14213d;       /* masthead */
+  --chrome-ink: #ffffff;
+  --chrome-link: #cfdcf2;
+  --chrome-dim: #9fb3d9;
+
   --pending: #a1560b;
   --pending-bg: #fdf3e3;
+  --pending-rule: #e5c99c;
   --confirmed: #1a6b3c;
   --confirmed-bg: #e8f4ec;
+  --confirmed-rule: #b6d6c2;
   --danger: #a3211d;
   --danger-bg: #fbeceb;
+  --danger-rule: #e0b6b4;
   --focus: #2f5fd0;
 
+  --screen-bg: #14213d;    /* venue board */
+  --screen-ink: #ffffff;
+  --screen-rule: #2c4270;
+  --screen-dim: #9fb3d9;
+
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --step-0: 1rem;
   --step-1: 1.2rem;
   --step-2: 1.5rem;
   --step-3: 2rem;
   --radius: 6px;
+}
+
+/* Nightshade. Defined twice on purpose: once for a reader whose device asks
+   for dark and who has not chosen, once for a reader who chose dark outright.
+   Neither block introduces a colour the light block does not already name. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --ink: #efe9f4;
+    --ink-soft: #9c90ad;
+    --ink-faint: #6c6280;
+    --paper: #0c0a12;
+    --surface: #17131f;
+    --surface-2: #1f1a2b;
+    --surface-3: #262035;
+    --rule: #2e2640;
+    --rule-strong: #443860;
+
+    --accent: #b23a6f;
+    --accent-hi: #c8447e;
+    --on-accent: #ffffff;
+
+    --chrome: #120f19;
+    --chrome-ink: #efe9f4;
+    --chrome-link: #c9bcd6;
+    --chrome-dim: #9c90ad;
+
+    --pending: #c6a15b;
+    --pending-bg: rgba(198, 161, 91, .10);
+    --pending-rule: rgba(198, 161, 91, .38);
+    --confirmed: #6fb894;
+    --confirmed-bg: rgba(111, 184, 148, .10);
+    --confirmed-rule: rgba(111, 184, 148, .38);
+    --danger: #d0605f;
+    --danger-bg: rgba(208, 96, 95, .11);
+    --danger-rule: rgba(208, 96, 95, .42);
+    --focus: #c8447e;
+
+    --screen-bg: #0c0a12;
+    --screen-ink: #efe9f4;
+    --screen-rule: #2e2640;
+    --screen-dim: #9c90ad;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --ink: #efe9f4;
+  --ink-soft: #9c90ad;
+  --ink-faint: #6c6280;
+  --paper: #0c0a12;
+  --surface: #17131f;
+  --surface-2: #1f1a2b;
+  --surface-3: #262035;
+  --rule: #2e2640;
+  --rule-strong: #443860;
+
+  --accent: #b23a6f;
+  --accent-hi: #c8447e;
+  --on-accent: #ffffff;
+
+  --chrome: #120f19;
+  --chrome-ink: #efe9f4;
+  --chrome-link: #c9bcd6;
+  --chrome-dim: #9c90ad;
+
+  --pending: #c6a15b;
+  --pending-bg: rgba(198, 161, 91, .10);
+  --pending-rule: rgba(198, 161, 91, .38);
+  --confirmed: #6fb894;
+  --confirmed-bg: rgba(111, 184, 148, .10);
+  --confirmed-rule: rgba(111, 184, 148, .38);
+  --danger: #d0605f;
+  --danger-bg: rgba(208, 96, 95, .11);
+  --danger-rule: rgba(208, 96, 95, .42);
+  --focus: #c8447e;
+
+  --screen-bg: #0c0a12;
+  --screen-ink: #efe9f4;
+  --screen-rule: #2e2640;
+  --screen-dim: #9c90ad;
 }
 
 * { box-sizing: border-box; }
@@ -51,8 +168,8 @@ a { color: var(--focus); }
 /* ---------------------------------------------------------------- layout */
 
 .masthead {
-  background: var(--ink);
-  color: #fff;
+  background: var(--chrome);
+  color: var(--chrome-ink);
   padding: .85rem 1.25rem;
   display: flex;
   align-items: center;
@@ -65,9 +182,9 @@ a { color: var(--focus); }
   letter-spacing: -.02em;
   margin-right: auto;
 }
-.masthead .brand span { color: #9fb3d9; font-weight: 500; }
-.masthead a { color: #cfdcf2; text-decoration: none; font-size: .9rem; }
-.masthead a:hover { color: #fff; text-decoration: underline; }
+.masthead .brand span { color: var(--chrome-dim); font-weight: 500; }
+.masthead a { color: var(--chrome-link); text-decoration: none; font-size: .9rem; }
+.masthead a:hover { color: var(--chrome-ink); text-decoration: underline; }
 
 .wrap { max-width: 34rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
 .wrap-wide { max-width: 76rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
@@ -97,7 +214,7 @@ input[type=text], input[type=password], input[type=number], select, textarea {
   padding: .6rem .7rem;
   border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
-  background: #fff;
+  background: var(--surface);
 }
 textarea { min-height: 7rem; resize: vertical; }
 
@@ -110,20 +227,20 @@ button {
   font-weight: 600;
   padding: .6rem 1rem;
   border-radius: var(--radius);
-  border: 1px solid var(--ink);
-  background: var(--ink);
-  color: #fff;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
   cursor: pointer;
 }
-button:hover { background: #1d2f57; }
+button:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 
-button.secondary { background: #fff; color: var(--ink); border-color: var(--rule-strong); }
-button.secondary:hover { background: #f3f5f9; }
+button.secondary { background: var(--surface); color: var(--ink); border-color: var(--rule-strong); }
+button.secondary:hover { background: var(--surface-2); border-color: var(--rule-strong); }
 button.quiet { background: none; border-color: transparent; color: var(--ink-soft); padding: .3rem .5rem; }
-button.quiet:hover { background: #eceff4; color: var(--ink); }
-button.danger { background: #fff; color: var(--danger); border-color: #e0b6b4; }
-button.danger:hover { background: var(--danger-bg); }
+button.quiet:hover { background: var(--surface-3); color: var(--ink); }
+button.danger { background: var(--surface); color: var(--danger); border-color: var(--danger-rule); }
+button.danger:hover { background: var(--danger-bg); border-color: var(--danger-rule); }
 button.wide { width: 100%; }
 
 .btn-row { display: flex; gap: .5rem; flex-wrap: wrap; }
@@ -134,13 +251,13 @@ button.wide { width: 100%; }
   padding: .7rem .85rem;
   border-radius: var(--radius);
   border: 1px solid var(--rule);
-  background: #f6f8fa;
+  background: var(--surface-2);
   font-size: .92rem;
   margin-bottom: 1rem;
 }
-.note.error { background: var(--danger-bg); border-color: #e0b6b4; color: var(--danger); }
-.note.good { background: var(--confirmed-bg); border-color: #b6d6c2; color: var(--confirmed); }
-.note.warn { background: var(--pending-bg); border-color: #e5c99c; color: var(--pending); }
+.note.error { background: var(--danger-bg); border-color: var(--danger-rule); color: var(--danger); }
+.note.good { background: var(--confirmed-bg); border-color: var(--confirmed-rule); color: var(--confirmed); }
+.note.warn { background: var(--pending-bg); border-color: var(--pending-rule); color: var(--pending); }
 .note:empty { display: none; }
 
 .empty { color: var(--ink-faint); font-size: .95rem; padding: 1rem 0; }
@@ -220,6 +337,73 @@ tr.dropped td { color: var(--ink-faint); text-decoration: line-through; }
 .tag.pending { color: var(--pending); background: var(--pending-bg); }
 .tag.confirmed { color: var(--confirmed); background: var(--confirmed-bg); }
 
+/* ---------------------------------------------------------- round clock */
+
+/*
+ * The clock is a read-out, not a countdown the page owns: app.js recomputes it
+ * from the round's absolute end time on every tick, so a phone that slept for
+ * ten minutes shows the right number the instant it wakes.
+ */
+.clockbar {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex-wrap: wrap;
+  padding: .6rem .75rem;
+  margin-bottom: .9rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.clock {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--step-2);
+  font-weight: 700;
+  letter-spacing: .02em;
+  margin-right: auto;
+}
+.clock.paused { color: var(--ink-soft); }
+.clock.low { color: var(--pending); }
+.clock.over { color: var(--danger); }
+.clockbar .btn-row button { padding: .35rem .6rem; font-size: .85rem; }
+
+/* On the venue board the clock is the second-biggest thing on the wall. */
+.screen .clockbar {
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--screen-rule);
+  border-radius: 0;
+  padding: 0 0 .75rem;
+  margin-bottom: 1.5rem;
+}
+.screen .clock { font-size: clamp(2rem, 7vw, 4.5rem); }
+.screen .clock.paused { color: var(--screen-dim); }
+
+/* ----------------------------------------------------------- round gate */
+
+/*
+ * Confirming every match and signing the round off are two different acts. The
+ * gate is the second one, and it gets its own bar so it cannot be mistaken for
+ * one more result button.
+ */
+.gate {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--pending);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.gate.done { border-left-color: var(--confirmed); }
+.gate .gate-text { flex: 1; min-width: 12rem; font-size: .9rem; }
+.gate .gate-text strong { display: block; }
+.gate .gate-text span { color: var(--ink-soft); }
+
 /* -------------------------------------------------------------- bracket */
 
 .bracket { display: flex; gap: 1.5rem; overflow-x: auto; padding-bottom: .5rem; }
@@ -236,13 +420,24 @@ tr.dropped td { color: var(--ink-faint); text-decoration: line-through; }
 
 /* ------------------------------------------------------- big screen view */
 
-.screen { background: var(--ink); color: #fff; min-height: 100vh; padding: 2rem; }
+.screen { background: var(--screen-bg); color: var(--screen-ink); min-height: 100vh; padding: 2rem; }
 .screen h1 { font-size: clamp(1.5rem, 4vw, 2.5rem); margin-bottom: 1.5rem; }
-.screen table { font-size: clamp(1rem, 2.2vw, 1.5rem); color: #fff; }
-.screen th, .screen td { border-bottom-color: #2c4270; padding: .5rem .75rem; }
-.screen th { color: #9fb3d9; }
+.screen table { font-size: clamp(1rem, 2.2vw, 1.5rem); color: var(--screen-ink); }
+.screen th, .screen td { border-bottom-color: var(--screen-rule); padding: .5rem .75rem; }
+.screen th { color: var(--screen-dim); }
 
 .hidden { display: none !important; }
+
+/* The theme switch sits in the masthead and inherits its colours. */
+button.theme-toggle {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--chrome-link);
+  padding: .25rem .5rem;
+  font-size: .9rem;
+  font-weight: 500;
+}
+button.theme-toggle:hover { background: none; border-color: var(--chrome-dim); color: var(--chrome-ink); }
 
 .helper { font-size: .85rem; color: var(--ink-soft); margin-top: .35rem; }
 .code {
@@ -269,7 +464,7 @@ tr.dropped td { color: var(--ink-faint); text-decoration: line-through; }
   text-decoration: none;
   color: inherit;
 }
-.listing:hover { border-color: var(--rule-strong); background: #fbfcfd; }
+.listing:hover { border-color: var(--rule-strong); background: var(--surface-2); }
 .listing-main { flex: 1; min-width: 0; }
 .listing-name { font-weight: 650; }
 .listing-meta { font-size: .85rem; color: var(--ink-soft); }
@@ -282,9 +477,9 @@ tr.dropped td { color: var(--ink-faint); text-decoration: line-through; }
   white-space: nowrap;
   border: 1px solid;
 }
-.status.setup { color: var(--ink-soft); background: #eef1f5; border-color: var(--rule-strong); }
-.status.swiss, .status.cut { color: var(--pending); background: var(--pending-bg); border-color: #e5c99c; }
-.status.done { color: var(--confirmed); background: var(--confirmed-bg); border-color: #b6d6c2; }
+.status.setup { color: var(--ink-soft); background: var(--surface-2); border-color: var(--rule-strong); }
+.status.swiss, .status.cut { color: var(--pending); background: var(--pending-bg); border-color: var(--pending-rule); }
+.status.done { color: var(--confirmed); background: var(--confirmed-bg); border-color: var(--confirmed-rule); }
 
 /* ------------------------------------------------------------ name picks */
 
@@ -316,19 +511,21 @@ button.pick small { font-weight: 500; color: var(--ink-soft); font-size: .8rem; 
   padding: .6rem .8rem;
   white-space: nowrap;
 }
-.tabs button:hover { background: #eceff4; color: var(--ink); }
-.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+.tabs button:hover { background: var(--surface-3); color: var(--ink); }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
 
 /* -------------------------------------------------------------- qr sheet */
 
 .qr-sheet { text-align: center; padding: 2rem 1rem; }
 .qr-sheet h1 { font-size: clamp(1.5rem, 5vw, 2.5rem); }
+/* The QR box stays white in both themes: a phone camera needs the contrast,
+   and a dark QR on a dark ground does not scan. */
 .qr-sheet .qr-box { display: inline-block; padding: 1rem; background: #fff; border: 1px solid var(--rule); border-radius: var(--radius); }
 .qr-sheet img, .qr-sheet svg { width: min(70vw, 26rem); height: auto; display: block; }
 .qr-sheet .url { font-size: 1.1rem; margin-top: 1rem; word-break: break-all; }
 
 @media print {
   .masthead, .no-print { display: none !important; }
-  body { background: #fff; }
+  body { background: #fff; color: #000; }
   .qr-sheet { padding: 0; }
 }
