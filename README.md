@@ -1,4 +1,4 @@
-# Onic TCG Tournament
+# TCG Tournament WebApp
 
 A self-hosted Swiss tournament system for Pokémon TCG events. Built as a fallback
 you control, so it is deliberately plain: **no dependencies at all**, no database
